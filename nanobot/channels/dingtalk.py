@@ -70,8 +70,19 @@ class NanobotDingTalkHandler(CallbackHandler):
             conversation_type = message.data.get("conversationType", "1")
             conversation_id = message.data.get("conversationId", "")
 
+            # Group chat title (name of the group)
+            # Try SDK field first, fall back to raw data
+            conversation_title = (
+                chatbot_msg.conversation_title
+                or message.data.get("conversationTitle", "")
+                or ""
+            )
+            logger.debug(f"DingTalk raw message keys: {list(message.data.keys())}")
+
             logger.info(f"Received DingTalk message from {sender_name} ({sender_id}), "
-                        f"type={'group' if conversation_type == '2' else 'private'}: {content}")
+                        f"type={'group' if conversation_type == '2' else 'private'}"
+                        f"{f' in [{conversation_title}]' if conversation_title else ''}"
+                        f": {content}")
 
             # For group chat, use conversationId as chat_id
             chat_id = conversation_id if conversation_type == "2" else sender_id
@@ -83,6 +94,7 @@ class NanobotDingTalkHandler(CallbackHandler):
                     content, sender_id, sender_name,
                     chat_id=chat_id,
                     is_group=conversation_type == "2",
+                    conversation_title=conversation_title,
                 )
             )
             self.channel._background_tasks.add(task)
@@ -245,7 +257,8 @@ class DingTalkChannel(BaseChannel):
             logger.error(f"Error sending DingTalk message: {e}")
 
     async def _on_message(self, content: str, sender_id: str, sender_name: str,
-                          chat_id: str | None = None, is_group: bool = False) -> None:
+                          chat_id: str | None = None, is_group: bool = False,
+                          conversation_title: str = "") -> None:
         """Handle incoming message (called by NanobotDingTalkHandler).
 
         Delegates to BaseChannel._handle_message() which enforces allow_from
@@ -254,15 +267,23 @@ class DingTalkChannel(BaseChannel):
         try:
             effective_chat_id = chat_id or sender_id
             logger.info(f"DingTalk inbound: {content} from {sender_name}"
-                        f"{' (group)' if is_group else ''}")
+                        f"{' (group)' if is_group else ''}"
+                        f"{f' in [{conversation_title}]' if conversation_title else ''}")
+            # For group chat, prepend sender name so the agent knows who is speaking
+            if is_group:
+                prefix = f"[群:{conversation_title}] " if conversation_title else ""
+                effective_content = f"{prefix}{sender_name}: {content}"
+            else:
+                effective_content = str(content)
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=effective_chat_id,
-                content=str(content),
+                content=effective_content,
                 metadata={
                     "sender_name": sender_name,
                     "platform": "dingtalk",
                     "is_group": is_group,
+                    "conversation_title": conversation_title,
                 },
             )
         except Exception as e:
