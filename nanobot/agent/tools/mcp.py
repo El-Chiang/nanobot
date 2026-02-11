@@ -106,12 +106,15 @@ class MCPManager:
             )
 
             try:
-                await ready
+                await asyncio.wait_for(ready, timeout=30)
                 self._handles.append(handle)
                 all_tools.extend(handle.tools)
                 logger.info(f"MCP server '{name}': {len(handle.tools)} tools discovered")
-            except BaseException as e:
-                logger.error(f"MCP server '{name}' failed to connect: {e}")
+            except (asyncio.TimeoutError, BaseException) as e:
+                if isinstance(e, asyncio.TimeoutError):
+                    logger.error(f"MCP server '{name}' connection timed out (30s)")
+                else:
+                    logger.error(f"MCP server '{name}' failed to connect: {e}")
                 if handle.task and not handle.task.done():
                     handle.task.cancel()
                     try:

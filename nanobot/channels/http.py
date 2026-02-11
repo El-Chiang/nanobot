@@ -1,6 +1,8 @@
 """HTTP channel — synchronous request-response mode."""
 
 import asyncio
+import functools
+import json
 import uuid
 
 from aiohttp import web
@@ -10,6 +12,9 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import HttpConfig
+
+
+_json_dumps = functools.partial(json.dumps, ensure_ascii=False)
 
 
 class HttpChannel(BaseChannel):
@@ -75,11 +80,11 @@ class HttpChannel(BaseChannel):
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON"}, status=400, dumps=_json_dumps)
 
         message = body.get("message", "").strip()
         if not message:
-            return web.json_response({"error": "message is required"}, status=400)
+            return web.json_response({"error": "message is required"}, status=400, dumps=_json_dumps)
 
         session_id = body.get("session_id") or str(uuid.uuid4())
         request_id = str(uuid.uuid4())
@@ -87,7 +92,7 @@ class HttpChannel(BaseChannel):
         # Access control
         sender_id = session_id
         if not self.is_allowed(sender_id):
-            return web.json_response({"error": "access denied"}, status=403)
+            return web.json_response({"error": "access denied"}, status=403, dumps=_json_dumps)
 
         # Create a future and register it
         loop = asyncio.get_running_loop()
@@ -107,10 +112,10 @@ class HttpChannel(BaseChannel):
             reply = await asyncio.wait_for(fut, timeout=120)
         except asyncio.TimeoutError:
             self._pending.pop(request_id, None)
-            return web.json_response({"error": "timeout"}, status=504)
+            return web.json_response({"error": "timeout"}, status=504, dumps=_json_dumps)
 
-        return web.json_response({"reply": reply, "session_id": session_id})
+        return web.json_response({"reply": reply, "session_id": session_id}, dumps=_json_dumps)
 
     async def _handle_health(self, _request: web.Request) -> web.Response:
         """Handle GET /api/health."""
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok"}, dumps=_json_dumps)
