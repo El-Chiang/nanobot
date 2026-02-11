@@ -665,6 +665,8 @@ That's it! Environment variables, model prefixing, config matching, and `nanobot
 | `nanobot status` | Show status |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot mcp list` | List configured MCP servers |
+| `nanobot mcp tools` | Connect to MCP servers and list all discovered tools |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
@@ -682,6 +684,41 @@ nanobot cron list
 # Remove a job
 nanobot cron remove <job_id>
 ```
+
+</details>
+
+<details>
+<summary><b>MCP Servers</b></summary>
+
+nanobot supports [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers, allowing the agent to use external tools dynamically.
+
+```bash
+# List configured MCP servers
+nanobot mcp list
+
+# Connect to all servers and list discovered tools
+nanobot mcp tools
+```
+
+Configure MCP servers in `~/.nanobot/config.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "my-server": {
+        "command": "npx",
+        "args": ["-y", "@example/mcp-server"],
+        "env": {
+          "API_KEY": "xxx"
+        }
+      }
+    }
+  }
+}
+```
+
+Once configured, MCP tools are automatically discovered and registered as `mcp__{server}__{tool_name}` — the agent can call them like any built-in tool.
 
 </details>
 
