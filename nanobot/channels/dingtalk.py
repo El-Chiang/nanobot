@@ -88,7 +88,7 @@ class NanobotDingTalkHandler(CallbackHandler):
             )
             logger.debug(f"DingTalk raw message keys: {list(message.data.keys())}")
 
-            logger.info(f"Received DingTalk message from {sender_name} ({sender_id}), "
+            logger.info(f"Received DingTalk message from {sender_name} (staff_id={sender_id}), "
                         f"type={'group' if conversation_type == '2' else 'private'}"
                         f"{f' in [{conversation_title}]' if conversation_title else ''}"
                         f": {content}")
@@ -270,6 +270,51 @@ class DingTalkChannel(BaseChannel):
             logger.error(f"Failed to download DingTalk image: {e}")
             return None
 
+    async def _upload_media(self, file_path: str, media_type: str = "image") -> str | None:
+        """Upload a media file to DingTalk and return the mediaId.
+
+        Uses the old OApi endpoint which returns a media_id that can be
+        used with ``sampleImageMsg`` (and similar) message keys.
+        """
+        token = await self._get_access_token()
+        if not token or not self._http:
+            return None
+
+        url = f"https://oapi.dingtalk.com/media/upload?access_token={token}&type={media_type}"
+
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(f"Media file not found: {file_path}")
+            return None
+
+        # Guess MIME type
+        suffix = path.suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }
+        mime = mime_map.get(suffix, "application/octet-stream")
+
+        try:
+            file_bytes = path.read_bytes()
+            files = {"media": (path.name, file_bytes, mime)}
+            resp = await self._http.post(url, files=files)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("errcode", 0) != 0:
+                logger.error(f"DingTalk media upload failed: {data}")
+                return None
+            media_id = data.get("media_id")
+            logger.debug(f"Uploaded media to DingTalk, mediaId: {media_id}")
+            return media_id
+        except Exception as e:
+            logger.error(f"Failed to upload media to DingTalk: {e}")
+            return None
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through DingTalk (private or group)."""
         token = await self._get_access_token()
@@ -310,6 +355,7 @@ class DingTalkChannel(BaseChannel):
             logger.warning("DingTalk HTTP client not initialized, cannot send")
             return
 
+        # Send text/markdown content
         try:
             resp = await self._http.post(url, json=data, headers=headers)
             if resp.status_code != 200:
@@ -318,6 +364,39 @@ class DingTalkChannel(BaseChannel):
                 logger.debug(f"DingTalk message sent to {msg.chat_id}")
         except Exception as e:
             logger.error(f"Error sending DingTalk message: {e}")
+
+        # Send images (if any)
+        for media_path in (msg.media or []):
+            media_id = await self._upload_media(media_path)
+            if not media_id:
+                logger.warning(f"Skipping image send, upload failed: {media_path}")
+                continue
+
+            if is_group:
+                img_url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+                img_data = {
+                    "robotCode": self.config.client_id,
+                    "openConversationId": msg.chat_id,
+                    "msgKey": "sampleImageMsg",
+                    "msgParam": json.dumps({"photoURL": media_id}),
+                }
+            else:
+                img_url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+                img_data = {
+                    "robotCode": self.config.client_id,
+                    "userIds": [msg.chat_id],
+                    "msgKey": "sampleImageMsg",
+                    "msgParam": json.dumps({"photoURL": media_id}),
+                }
+
+            try:
+                img_resp = await self._http.post(img_url, json=img_data, headers=headers)
+                if img_resp.status_code != 200:
+                    logger.error(f"DingTalk image send failed: {img_resp.text}")
+                else:
+                    logger.debug(f"DingTalk image sent to {msg.chat_id}")
+            except Exception as e:
+                logger.error(f"Error sending DingTalk image: {e}")
 
     async def _on_message(self, content: str, sender_id: str, sender_name: str,
                           chat_id: str | None = None, is_group: bool = False,
