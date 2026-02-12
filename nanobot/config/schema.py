@@ -170,6 +170,10 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 50
+    thinking: str | None = None  # "enabled" (Opus 4.5) or "adaptive" (Opus 4.6), None = off
+    thinking_budget: int = 10000  # Token budget when thinking="enabled"
+    effort: str | None = None  # "low" / "medium" / "high" / "max"(Opus 4.6 only), None = don't send
+    memory_daily_subdir: str = ""  # Subdirectory under memory/ for daily notes (e.g. "daily" → memory/daily/)
 
 
 class AgentsConfig(BaseModel):

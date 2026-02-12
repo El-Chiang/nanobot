@@ -136,6 +136,9 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        thinking: str | None = None,
+        thinking_budget: int = 10000,
+        effort: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -181,6 +184,16 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+
+        # Extended thinking (Anthropic models)
+        if thinking == "enabled":
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+        elif thinking == "adaptive":
+            kwargs["thinking"] = {"type": "adaptive"}
+
+        # Effort control via output_config (Anthropic native)
+        if effort is not None:
+            kwargs["output_config"] = {"effort": effort}
 
         try:
             logger.debug(f"LLM Request: model={kwargs.get('model')}, api_base={kwargs.get('api_base')}")

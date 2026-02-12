@@ -330,8 +330,12 @@ def gateway(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers={n: c for n, c in config.mcp.servers.items() if c.enabled} or None,
+        thinking=config.agents.defaults.thinking,
+        thinking_budget=config.agents.defaults.thinking_budget,
+        effort=config.agents.defaults.effort,
+        memory_daily_subdir=config.agents.defaults.memory_daily_subdir,
     )
-    
+
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
@@ -441,8 +445,12 @@ def agent(
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers={n: c for n, c in config.mcp.servers.items() if c.enabled} or None,
+        thinking=config.agents.defaults.thinking,
+        thinking_budget=config.agents.defaults.thinking_budget,
+        effort=config.agents.defaults.effort,
+        memory_daily_subdir=config.agents.defaults.memory_daily_subdir,
     )
-    
+
     # Show spinner when logs are off (no output to miss); skip when logs are on
     def _thinking_ctx():
         if logs:

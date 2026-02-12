@@ -47,6 +47,10 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        thinking: str | None = None,
+        thinking_budget: int = 10000,
+        effort: str | None = None,
+        memory_daily_subdir: str = "",
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -59,8 +63,11 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.thinking = thinking
+        self.thinking_budget = thinking_budget
+        self.effort = effort
         
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, memory_daily_subdir=memory_daily_subdir)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -222,10 +229,13 @@ class AgentLoop:
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
+                thinking=self.thinking,
+                thinking_budget=self.thinking_budget,
+                effort=self.effort,
             )
             last_finish_reason = response.finish_reason or "unknown"
-            
+
             # Handle tool calls
             if response.has_tool_calls:
                 # Add assistant message with tool calls
@@ -351,10 +361,13 @@ class AgentLoop:
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
+                thinking=self.thinking,
+                thinking_budget=self.thinking_budget,
+                effort=self.effort,
             )
             last_finish_reason = response.finish_reason or "unknown"
-            
+
             if response.has_tool_calls:
                 tool_call_dicts = [
                     {

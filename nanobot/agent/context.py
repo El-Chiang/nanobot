@@ -20,9 +20,10 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, memory_daily_subdir: str = ""):
         self.workspace = workspace
-        self.memory = MemoryStore(workspace)
+        self.memory_daily_subdir = memory_daily_subdir
+        self.memory = MemoryStore(workspace, daily_subdir=memory_daily_subdir)
         self.skills = SkillsLoader(workspace)
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -78,14 +79,12 @@ Skills with available="false" need dependencies installed first - you can try in
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
         
-        return f"""# nanobot 🐈
+        daily_path = f"{workspace_path}/memory/{self.memory_daily_subdir}" if self.memory_daily_subdir else f"{workspace_path}/memory"
 
-You are nanobot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
+        return f"""# Kaguya 🐈
+Powered by nanobot. 身份见 SOUL.md，用户信息见 USER.md，行为规则见 AGENTS.md。
+
+你可以：读写文件、执行命令、搜索网页、发送消息、派生子任务。
 
 ## Current Time
 {now}
@@ -96,15 +95,14 @@ You are nanobot, a helpful AI assistant. You have access to tools that allow you
 ## Workspace
 Your workspace is at: {workspace_path}
 - Memory files: {workspace_path}/memory/MEMORY.md
-- Daily notes: {workspace_path}/memory/YYYY-MM-DD.md
+- Daily notes: {daily_path}/YYYY-MM-DD.md
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
-IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool.
+Powered by nanobot. 身份见 SOUL.md，用户信息见 USER.md，行为规则见 AGENTS.md。
 
-Always be helpful, accurate, and concise. When using tools, explain what you're doing.
-When remembering something, write to {workspace_path}/memory/MEMORY.md"""
+你可以：读写文件、执行命令、搜索网页、发送消息、派生子任务。
+
+当需要记住什么时，写入 {workspace_path}/memory/MEMORY.md"""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""

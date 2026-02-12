@@ -13,14 +13,15 @@ class MemoryStore:
     Supports daily notes (memory/YYYY-MM-DD.md) and long-term memory (MEMORY.md).
     """
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, daily_subdir: str = ""):
         self.workspace = workspace
         self.memory_dir = ensure_dir(workspace / "memory")
+        self.daily_dir = ensure_dir(self.memory_dir / daily_subdir) if daily_subdir else self.memory_dir
         self.memory_file = self.memory_dir / "MEMORY.md"
     
     def get_today_file(self) -> Path:
         """Get path to today's memory file."""
-        return self.memory_dir / f"{today_date()}.md"
+        return self.daily_dir / f"{today_date()}.md"
     
     def read_today(self) -> str:
         """Read today's memory notes."""
@@ -71,7 +72,7 @@ class MemoryStore:
         for i in range(days):
             date = today - timedelta(days=i)
             date_str = date.strftime("%Y-%m-%d")
-            file_path = self.memory_dir / f"{date_str}.md"
+            file_path = self.daily_dir / f"{date_str}.md"
             
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
@@ -81,10 +82,10 @@ class MemoryStore:
     
     def list_memory_files(self) -> list[Path]:
         """List all memory files sorted by date (newest first)."""
-        if not self.memory_dir.exists():
+        if not self.daily_dir.exists():
             return []
-        
-        files = list(self.memory_dir.glob("????-??-??.md"))
+
+        files = list(self.daily_dir.glob("????-??-??.md"))
         return sorted(files, reverse=True)
     
     def get_memory_context(self) -> str:

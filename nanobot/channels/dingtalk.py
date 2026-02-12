@@ -323,6 +323,9 @@ class DingTalkChannel(BaseChannel):
 
         headers = {"x-acs-dingtalk-access-token": token}
         is_group = msg.metadata.get("is_group", False) if msg.metadata else False
+        # Fallback: detect group conversation by chat_id prefix
+        if not is_group and msg.chat_id and msg.chat_id.startswith("cid"):
+            is_group = True
 
         if is_group:
             # groupMessages/send: sends to a group conversation
