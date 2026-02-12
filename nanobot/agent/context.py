@@ -102,8 +102,10 @@ Your workspace is at: {workspace_path}
     - 通用日志: {data_dir}/logs/nanobot_YYYY-MM-DD.log
     - 重启日志: {data_dir}/restart.log
 
-当需要记住什么时，exec_command tool update {workspace_path}/memory/MEMORY.md。
-IMPORTANT: 你的代码决定了每次对话只会带上 50 条消息，所以不要只说记住了、知道了，而是更新你的记忆文件帮助你自己记住重要信息。"""
+## Message Rules
+- IMPORTANT: For normal conversation, just respond with text - do not call the message tool.
+- 当需要记住什么时，update {workspace_path}/memory/MEMORY.md。
+- IMPORTANT: 你的代码决定了每次对话只会带上 50 条消息，所以不要只说记住了、知道了，而是更新你的记忆文件帮助你自己记住重要信息。"""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""

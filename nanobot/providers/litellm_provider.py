@@ -15,7 +15,7 @@ from nanobot.providers.registry import find_by_model, find_gateway
 class LiteLLMProvider(LLMProvider):
     """
     LLM provider using LiteLLM for multi-provider support.
-    
+
     Supports OpenRouter, Anthropic, OpenAI, Gemini, MiniMax, and many other providers through
     a unified interface.  Provider-specific logic is driven by the registry
     (see providers/registry.py) — no if-elif chains needed here.
@@ -46,7 +46,7 @@ class LiteLLMProvider(LLMProvider):
         litellm.suppress_debug_info = True
         # Drop unsupported parameters for providers (e.g., gpt-5 rejects some params)
         litellm.drop_params = True
-    
+
     def _setup_env(self, api_key: str, api_base: str | None, model: str) -> None:
         """Set environment variables based on detected provider."""
         spec = self._gateway or find_by_model(model)
@@ -67,7 +67,7 @@ class LiteLLMProvider(LLMProvider):
             resolved = env_val.replace("{api_key}", api_key)
             resolved = resolved.replace("{api_base}", effective_base)
             os.environ.setdefault(env_name, resolved)
-    
+
     def _resolve_model(self, model: str) -> str:
         """Resolve model name by applying provider/gateway prefixes."""
         if self._gateway:
@@ -78,15 +78,15 @@ class LiteLLMProvider(LLMProvider):
             if prefix and not model.startswith(f"{prefix}/"):
                 model = f"{prefix}/{model}"
             return model
-        
+
         # Standard mode: auto-prefix for known providers
         spec = find_by_model(model)
         if spec and spec.litellm_prefix:
             if not any(model.startswith(s) for s in spec.skip_prefixes):
                 model = f"{spec.litellm_prefix}/{model}"
-        
+
         return model
-    
+
     def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
         """Apply model-specific parameter overrides from the registry."""
         model_lower = model.lower()
@@ -128,7 +128,14 @@ class LiteLLMProvider(LLMProvider):
                 f"finish_reason={response.finish_reason}, "
                 f"content={content_preview}"
             )
-    
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        """Return a stable, searchable exception summary."""
+        name = type(exc).__name__
+        msg = str(exc).strip()
+        return f"{name}: {msg}" if msg else name
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -142,33 +149,33 @@ class LiteLLMProvider(LLMProvider):
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions in OpenAI format.
             model: Model identifier (e.g., 'anthropic/claude-sonnet-4-5').
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
-        
+
         Returns:
             LLMResponse with content and/or tool calls.
         """
         model = self._resolve_model(model or self.default_model)
-        
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        
+
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
         self._apply_model_overrides(model, kwargs)
-        
+
         # Pass api_key directly — more reliable than env vars alone
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        
+
         # Pass api_base for custom endpoints
         if self.api_base:
             kwargs["api_base"] = self.api_base
@@ -196,24 +203,121 @@ class LiteLLMProvider(LLMProvider):
             kwargs["output_config"] = {"effort": effort}
 
         try:
-            logger.debug(f"LLM Request: model={kwargs.get('model')}, api_base={kwargs.get('api_base')}")
+            logger.debug(
+                f"LLM Request: model={kwargs.get('model')}, api_base={kwargs.get('api_base')}"
+            )
             response = await acompletion(**kwargs)
             parsed = self._parse_response(response)
             self._log_response_summary(parsed)
             return parsed
         except Exception as e:
-            # Return error as content for graceful handling
-            logger.warning(f"LLM Response: mode=error, error={str(e)}")
-            return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
+            # 非 stream 失败，尝试 stream 兜底
+            logger.warning(
+                "Non-stream call failed, falling back to stream: "
+                f"{self._format_exception(e)}"
             )
-    
+            try:
+                return await self._stream_chat(kwargs)
+            except Exception as stream_e:
+                err = self._format_exception(stream_e)
+                logger.warning(f"LLM Response: mode=error, error={err}")
+                return LLMResponse(
+                    content=f"Error calling LLM: {err}",
+                    finish_reason="error",
+                )
+
+    async def _stream_chat(self, kwargs: dict[str, Any]) -> LLMResponse:
+        """Stream 调用并拼装完整响应"""
+        kwargs["stream"] = True
+
+        content_parts: list[str] = []
+        tool_calls_map: dict[int, dict] = {}  # index -> {id, name, arguments}
+        finish_reason = "stop"
+        usage: dict[str, Any] = {}
+        reasoning_parts: list[str] = []
+
+        async for chunk in await acompletion(**kwargs):
+            choice = chunk.choices[0] if chunk.choices else None
+            if not choice:
+                continue
+
+            delta = choice.delta
+
+            # 收集 content
+            if delta.content:
+                content_parts.append(delta.content)
+
+            # 收集 reasoning_content（如果有）
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_parts.append(delta.reasoning_content)
+
+            # 收集 tool_calls（分片合并）
+            if hasattr(delta, "tool_calls") and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_map:
+                        tool_calls_map[idx] = {
+                            "id": tc.id or "",
+                            "name": tc.function.name if tc.function else "",
+                            "arguments": "",
+                        }
+                    if tc.id:
+                        tool_calls_map[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_map[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_map[idx]["arguments"] += tc.function.arguments
+
+            # 获取 finish_reason
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            # 获取 usage（通常在最后一个 chunk）
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage = {
+                    "prompt_tokens": chunk.usage.prompt_tokens,
+                    "completion_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+
+        # 构建 tool_calls 列表
+        tool_calls = []
+        for idx in sorted(tool_calls_map.keys()):
+            tc_data = tool_calls_map[idx]
+            args = tc_data["arguments"]
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {"raw": args}
+            tool_calls.append(
+                ToolCallRequest(
+                    id=tc_data["id"],
+                    name=tc_data["name"],
+                    arguments=args,
+                )
+            )
+
+        content = "".join(content_parts) if content_parts else None
+        reasoning_content = "".join(reasoning_parts) if reasoning_parts else None
+
+        response = LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+            reasoning_content=reasoning_content,
+        )
+
+        self._log_response_summary(response)
+        return response
+
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         message = choice.message
-        
+
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
@@ -224,13 +328,15 @@ class LiteLLMProvider(LLMProvider):
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {"raw": args}
-                
-                tool_calls.append(ToolCallRequest(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=args,
-                ))
-        
+
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=args,
+                    )
+                )
+
         usage = {}
         if hasattr(response, "usage") and response.usage:
             usage = {
@@ -238,9 +344,9 @@ class LiteLLMProvider(LLMProvider):
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
-        
+
         reasoning_content = getattr(message, "reasoning_content", None)
-        
+
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
@@ -248,7 +354,7 @@ class LiteLLMProvider(LLMProvider):
             usage=usage,
             reasoning_content=reasoning_content,
         )
-    
+
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model
