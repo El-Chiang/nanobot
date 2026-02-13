@@ -49,6 +49,18 @@ class Session:
         # Get recent messages
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
 
+        # Anthropic (and some gateways) reject malformed history windows that start with
+        # assistant/tool blocks cut from a previous turn. Keep only a turn-aligned suffix.
+        trimmed = 0
+        while recent and recent[0].get("role") != "user":
+            recent = recent[1:]
+            trimmed += 1
+        if trimmed:
+            logger.debug(
+                "Session history window realigned to user boundary "
+                f"(trimmed={trimmed}, window={min(len(self.messages), max_messages)})"
+            )
+
         # Convert to LLM format (role, content, and optional tool_calls / tool_call_id)
         history = []
         for m in recent:

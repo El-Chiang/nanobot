@@ -19,5 +19,5 @@ poetry.lock
 .pytest_cache/
 tests/
 botpy.log
-.DS_Store
 *.pem
+.DS_Store
