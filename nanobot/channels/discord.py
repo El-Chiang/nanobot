@@ -29,6 +29,7 @@ class DiscordChannel(BaseChannel):
         self.config: DiscordConfig = config
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._seq: int | None = None
+        self._bot_user_id: str | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._http: httpx.AsyncClient | None = None
@@ -133,6 +134,7 @@ class DiscordChannel(BaseChannel):
                 await self._start_heartbeat(interval_ms / 1000)
                 await self._identify()
             elif op == 0 and event_type == "READY":
+                self._bot_user_id = str((payload.get("user") or {}).get("id") or "")
                 logger.info("Discord gateway READY")
             elif op == 0 and event_type == "MESSAGE_CREATE":
                 await self._handle_message_create(payload)
@@ -184,10 +186,33 @@ class DiscordChannel(BaseChannel):
     async def _handle_message_create(self, payload: dict[str, Any]) -> None:
         """Handle incoming Discord messages."""
         author = payload.get("author") or {}
-        if author.get("bot"):
+        sender_id = str(author.get("id", ""))
+        is_bot_message = bool(author.get("bot"))
+        webhook_id = payload.get("webhook_id")
+
+        if webhook_id:
+            logger.debug(f"Skipping Discord webhook message: webhook_id={webhook_id}")
             return
 
-        sender_id = str(author.get("id", ""))
+        if self._bot_user_id and sender_id == self._bot_user_id:
+            logger.debug("Skipping Discord self-bot message")
+            return
+
+        if is_bot_message:
+            allow_bot_from = {str(bot_id) for bot_id in self.config.allow_bot_from}
+            if not self.config.allow_bot_messages:
+                logger.debug(
+                    f"Skipping Discord bot message: sender_id={sender_id}, "
+                    "reason=allow_bot_messages_disabled"
+                )
+                return
+            if allow_bot_from and sender_id not in allow_bot_from:
+                logger.debug(
+                    f"Skipping Discord bot message: sender_id={sender_id}, "
+                    "reason=not_in_allow_bot_from"
+                )
+                return
+
         channel_id = str(payload.get("channel_id", ""))
         content = payload.get("content") or ""
 
