@@ -200,6 +200,11 @@ class AgentLoop:
         else:
             session.add_message("assistant", final_content)
 
+    @staticmethod
+    def _contains_silent_marker(content: str | None) -> bool:
+        """Return True if model output requests no outbound reply."""
+        return bool(content) and "[SILENT]" in content
+
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a single inbound message.
@@ -336,6 +341,14 @@ class AgentLoop:
         # Save to session (tool_use_log stored as virtual tool call)
         self._save_session_with_tools(session, msg.content, final_content, tool_use_log)
         self.sessions.save(session)
+
+        if self._contains_silent_marker(final_content):
+            logger.info(
+                "Suppress outbound message for {}:{} due to [SILENT] marker",
+                msg.channel,
+                msg.sender_id,
+            )
+            return None
         
         # If final_content is empty (message already sent via tool), don't send another message
         if not final_content:
@@ -483,6 +496,13 @@ class AgentLoop:
             session, f"[System: {msg.sender_id}] {msg.content}", final_content, tool_use_log,
         )
         self.sessions.save(session)
+
+        if self._contains_silent_marker(final_content):
+            logger.info(
+                "Suppress outbound system message for {} due to [SILENT] marker",
+                msg.sender_id,
+            )
+            return None
         
         # If final_content is empty (message already sent via tool), don't send another message
         if not final_content:
