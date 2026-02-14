@@ -3,6 +3,7 @@
 import base64
 import mimetypes
 import platform
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +88,6 @@ Powered by nanobot. 身份见 SOUL.md，用户信息见 USER.md，行为规则�
 
 你可以：读写文件、执行命令、搜索网页、发送消息、派生子任务。
 
-## Current Time
-{now}
-
 ## Runtime
 {runtime}
 
@@ -103,15 +101,20 @@ Your workspace is at: {workspace_path}
     - 重启日志: {data_dir}/restart.log
 
 ## Message Rules
-- IMPORTANT: For normal conversation, just respond with text - do not call the message tool.
-- If you judge no reply is needed, output exactly [SILENT].
-- 当需要记住什么时，update {workspace_path}/memory/MEMORY.md。
-- IMPORTANT: 你的代码决定了每次对话只会带上 50 条消息，所以不要只说记住了、知道了，而是更新你的记忆文件帮助你自己记住重要信息。
-- IMPORTANT: message tool 和最终文本回复的去重规则：
-  - 长任务可以先用 message tool 发"稍等"之类的中间通知，干完活后再用最终文本回复总结，这是合理的两条消息。
-  - 但如果 message tool 已经发了完整的最终回答，最终文本回复必须输出 [SILENT]，不要重复说同一件事。
-  - 简单判断：message tool 发的是"过程通知"还是"完整回答"？如果是完整回答，就 [SILENT]。"""
-    
+- Default: for normal conversation, reply directly with assistant text; do not call the message tool.
+- Use message tool only when needed (e.g., directly send sticker, long task progress notice, explicit out-of-band delivery, or cross-chat/channel send).
+- If you judge no reply is needed, output exactly [SILENT]
+- IMPORTANT: message tool 和最终文本回复去重：
+  - 如果 message tool 发的是阶段性通知，最终可以继续给一条总结文本。
+  - 如果 message tool 已经发了完整最终答案，最终文本必须是 [SILENT]，避免重复。
+- Sticker rules:
+  - 入站贴纸会出现在用户消息里，如 [sticker: 😀 (set_name)] 或 [sticker: 😀]；把它当作用户语义的一部分来理解。
+  - 发送 Telegram 贴纸时，使用 message tool 的 `sticker_id` 参数（Telegram file_id）。
+- IMPORTANT: 你的代码决定了每次对话只会带上 50 条消息，所以不要只说记住了、知道了，而是更新记忆文件帮助你自己记住重要信息。
+
+## Current Time
+{now}"""
+
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
         parts = []
@@ -132,6 +135,7 @@ Your workspace is at: {workspace_path}
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        current_timestamp: datetime | str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -143,6 +147,7 @@ Your workspace is at: {workspace_path}
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            current_timestamp: Timestamp for current user message.
 
         Returns:
             List of messages including system prompt.
@@ -159,15 +164,45 @@ Your workspace is at: {workspace_path}
         messages.extend(history)
 
         # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media)
+        user_content = self._build_user_content(current_message, media, current_timestamp)
         messages.append({"role": "user", "content": user_content})
 
         return messages
 
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
-        if not media:
+    @staticmethod
+    def _format_message_time(timestamp: datetime | str | None) -> str:
+        """Normalize timestamp to date-time text for prompt."""
+        if not timestamp:
+            return ""
+        if isinstance(timestamp, datetime):
+            return timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(timestamp, str):
+            try:
+                return datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return timestamp
+        return str(timestamp)
+
+    @classmethod
+    def _append_message_time(cls, text: str, timestamp: datetime | str | None) -> str:
+        """Append time suffix for the current user message."""
+        if "message_time:" in text:
             return text
+        formatted = cls._format_message_time(timestamp)
+        if not formatted:
+            return text
+        return f"{text}\n\n[message_time: {formatted}]"
+
+    def _build_user_content(
+        self,
+        text: str,
+        media: list[str] | None,
+        timestamp: datetime | str | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """Build user message content with optional base64-encoded images."""
+        text_with_time = self._append_message_time(text, timestamp)
+        if not media:
+            return text_with_time
         
         images = []
         for path in media:
@@ -179,8 +214,8 @@ Your workspace is at: {workspace_path}
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         
         if not images:
-            return text
-        return images + [{"type": "text", "text": text}]
+            return text_with_time
+        return images + [{"type": "text", "text": text_with_time}]
     
     def add_tool_result(
         self,

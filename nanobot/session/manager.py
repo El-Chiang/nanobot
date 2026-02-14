@@ -35,7 +35,7 @@ class Session:
         }
         self.messages.append(msg)
         self.updated_at = datetime.now()
-    
+
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """
         Get message history for LLM context.
@@ -64,7 +64,7 @@ class Session:
         # Convert to LLM format (role, content, and optional tool_calls / tool_call_id)
         history = []
         for m in recent:
-            entry: dict[str, Any] = {"role": m["role"], "content": m["content"]}
+            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
             if "tool_calls" in m:
                 entry["tool_calls"] = m["tool_calls"]
             if "tool_call_id" in m:

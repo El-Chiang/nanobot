@@ -33,5 +33,6 @@ class OutboundMessage:
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     sticker_id: str | None = None
+    reaction: str | None = None  # emoji reaction, e.g. "👍"
+    reaction_message_id: int | None = None  # target Telegram message_id for reaction
     metadata: dict[str, Any] = field(default_factory=dict)
-

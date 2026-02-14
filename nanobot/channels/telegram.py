@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from telegram import BotCommand, InputMediaPhoto, Update
+from telegram import BotCommand, InputMediaPhoto, ReactionTypeEmoji, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from nanobot.bus.events import OutboundMessage
@@ -91,6 +92,7 @@ class TelegramChannel(BaseChannel):
     """
     
     name = "telegram"
+    _LOG_PREVIEW_LIMIT = 320
     
     # Commands registered with Telegram's command menu
     BOT_COMMANDS = [
@@ -113,6 +115,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._recent_messages: dict[str, OrderedDict[int, dict[str, Any]]] = {}
+        self._recent_message_limit = 500
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -208,6 +212,27 @@ class TelegramChannel(BaseChannel):
                 chat_id,
                 reply_to_message_id,
             )
+
+            # Handle reaction
+            reaction_emoji = msg.reaction or (msg.metadata.get("reaction") if msg.metadata else None)
+            reaction_msg_id = (
+                msg.reaction_message_id
+                or (msg.metadata.get("reaction_message_id") if msg.metadata else None)
+            )
+            if reaction_emoji and reaction_msg_id:
+                try:
+                    await self._app.bot.set_message_reaction(
+                        chat_id=chat_id,
+                        message_id=int(reaction_msg_id),
+                        reaction=[ReactionTypeEmoji(emoji=reaction_emoji)],
+                    )
+                    logger.debug("Set reaction {} on message {}", reaction_emoji, reaction_msg_id)
+                except Exception as e:
+                    logger.error("Error setting reaction: {}", e)
+                # If reaction-only (no text/media/sticker), return early
+                if not (msg.content or "").strip() and not msg.media and not (msg.sticker_id or "").strip():
+                    return
+
             sticker_id = (msg.sticker_id or "").strip()
             if sticker_id:
                 await self._send_sticker(chat_id, sticker_id, reply_to_message_id)
@@ -387,10 +412,13 @@ class TelegramChannel(BaseChannel):
         sender_context = self._build_sender_context(message, user)
         if sender_context:
             content_parts.append(sender_context)
+        str_chat_id = str(chat_id)
         reply_meta = self._extract_reply_metadata(message)
+        reply_meta = self._enrich_reply_metadata(str_chat_id, reply_meta)
         reply_context = self._build_reply_context(reply_meta)
         if reply_context:
             content_parts.append(reply_context)
+        if reply_meta.get("is_reply"):
             logger.debug(
                 "Telegram inbound reply detected: source={} from_user_id={} reply_to_message_id={} reply_to_user_id={}",
                 reply_meta.get("reply_source"),
@@ -477,9 +505,18 @@ class TelegramChannel(BaseChannel):
         
         content = "\n".join(content_parts) if content_parts else "[empty message]"
         
-        logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
-        
-        str_chat_id = str(chat_id)
+        preview = content[: self._LOG_PREVIEW_LIMIT]
+        if len(content) > self._LOG_PREVIEW_LIMIT:
+            preview += "...(truncated)"
+        logger.debug(f"Telegram message from {sender_id}: {preview}")
+
+        # Keep a small per-chat index for reply fallback by message_id.
+        self._remember_message(
+            chat_id=str_chat_id,
+            message_id=getattr(message, "message_id", None),
+            sender_display=self._resolve_sender_display(user),
+            text=self._build_index_text(message, media_type),
+        )
         
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
@@ -502,7 +539,8 @@ class TelegramChannel(BaseChannel):
                 "sticker_emoji": getattr(message.sticker, "emoji", None),
                 "sticker_set_name": getattr(message.sticker, "set_name", None),
                 **reply_meta,
-            }
+            },
+            timestamp=getattr(message, "date", None),
         )
     
     def _start_typing(self, chat_id: str) -> None:
@@ -546,6 +584,7 @@ class TelegramChannel(BaseChannel):
         """Extract reply target metadata from Telegram message."""
         replied = message.reply_to_message
         quote = getattr(message, "quote", None)
+        reply_to_message_id = getattr(message, "reply_to_message_id", None)
 
         if replied:
             replied_user = getattr(replied, "from_user", None)
@@ -560,7 +599,7 @@ class TelegramChannel(BaseChannel):
             return {
                 "is_reply": True,
                 "reply_source": "reply_to_message",
-                "reply_to_message_id": getattr(replied, "message_id", None),
+                "reply_to_message_id": getattr(replied, "message_id", None) or reply_to_message_id,
                 "reply_to_user_id": getattr(replied_user, "id", None),
                 "reply_to_username": getattr(replied_user, "username", None),
                 "reply_to_first_name": getattr(replied_user, "first_name", None),
@@ -586,14 +625,106 @@ class TelegramChannel(BaseChannel):
                 "reply_to_text": replied_text,
             }
 
-        if quote and isinstance(getattr(quote, "text", None), str):
+        if quote:
+            quote_text = getattr(quote, "text", None)
+            normalized_quote_text = (
+                " ".join(str(quote_text).split())[:200]
+                if isinstance(quote_text, str) and quote_text.strip()
+                else None
+            )
             return {
                 "is_reply": True,
                 "reply_source": "quote_only",
-                "reply_to_text": " ".join(quote.text.split())[:200],
+                "reply_to_message_id": reply_to_message_id,
+                "reply_to_text": normalized_quote_text,
+            }
+
+        if reply_to_message_id is not None:
+            return {
+                "is_reply": True,
+                "reply_source": "reply_to_message_id_only",
+                "reply_to_message_id": reply_to_message_id,
             }
 
         return {}
+
+    def _enrich_reply_metadata(self, chat_id: str, reply_meta: dict[str, object]) -> dict[str, object]:
+        """Fill reply target info from local per-chat message index when possible."""
+        if not reply_meta or not reply_meta.get("is_reply"):
+            return reply_meta
+
+        reply_id = reply_meta.get("reply_to_message_id")
+        try:
+            reply_id_int = int(reply_id) if reply_id is not None else None
+        except (TypeError, ValueError):
+            reply_id_int = None
+        if reply_id_int is None:
+            return reply_meta
+
+        cached = (self._recent_messages.get(chat_id) or {}).get(reply_id_int)
+        if not cached:
+            return reply_meta
+
+        enriched = dict(reply_meta)
+        if not enriched.get("reply_to_first_name") and not enriched.get("reply_to_username"):
+            cached_name = str(cached.get("sender_display") or "").strip()
+            if cached_name:
+                enriched["reply_to_first_name"] = cached_name
+        if not enriched.get("reply_to_text"):
+            cached_text = str(cached.get("text") or "").strip()
+            if cached_text:
+                enriched["reply_to_text"] = cached_text[:200]
+        return enriched
+
+    def _remember_message(
+        self,
+        chat_id: str,
+        message_id: Any,
+        sender_display: str,
+        text: str,
+    ) -> None:
+        """Remember recent inbound messages for reply fallback."""
+        try:
+            msg_id = int(message_id)
+        except (TypeError, ValueError):
+            return
+
+        if chat_id not in self._recent_messages:
+            self._recent_messages[chat_id] = OrderedDict()
+
+        cache = self._recent_messages[chat_id]
+        cache[msg_id] = {
+            "sender_display": sender_display or "unknown",
+            "text": text[:200] if text else "",
+        }
+        cache.move_to_end(msg_id)
+
+        while len(cache) > self._recent_message_limit:
+            cache.popitem(last=False)
+
+    @staticmethod
+    def _build_index_text(message, media_type: str | None) -> str:
+        """Build short plain text for local message index."""
+        text = (getattr(message, "text", None) or "").strip()
+        if text:
+            return text
+        caption = (getattr(message, "caption", None) or "").strip()
+        if caption:
+            return caption
+        sticker = getattr(message, "sticker", None)
+        if sticker:
+            emoji = (getattr(sticker, "emoji", None) or "").strip()
+            set_name = (getattr(sticker, "set_name", None) or "").strip()
+            if emoji and set_name:
+                return f"[sticker: {emoji} ({set_name})]"
+            if emoji:
+                return f"[sticker: {emoji}]"
+            if set_name:
+                return f"[sticker: {set_name}]"
+            return "[sticker]"
+        if media_type:
+            return f"[{media_type}]"
+        return "[empty message]"
 
     @staticmethod
     def _build_reply_context(reply_meta: dict[str, object]) -> str:
@@ -601,17 +732,19 @@ class TelegramChannel(BaseChannel):
         if not reply_meta:
             return ""
 
+        reply_id = reply_meta.get("reply_to_message_id")
         target_name = (
             reply_meta.get("reply_to_username")
             or reply_meta.get("reply_to_first_name")
             or reply_meta.get("reply_to_chat_title")
             or reply_meta.get("reply_to_user_id")
-            or "unknown"
+            or (f"message_id={reply_id}" if reply_id is not None else "unknown")
         )
         target_text = reply_meta.get("reply_to_text")
+        id_part = f", message_id: {reply_id}" if reply_id is not None else ""
         if target_text:
-            return f"[reply_to: {target_name}, text: {target_text}]"
-        return f"[reply_to: {target_name}]"
+            return f"[reply_to: {target_name}{id_part}, text: {target_text}]"
+        return f"[reply_to: {target_name}{id_part}]"
 
     @staticmethod
     def _resolve_sender_display(user) -> str:
@@ -629,12 +762,34 @@ class TelegramChannel(BaseChannel):
         """
         Build sender prefix for inbound messages.
         
-        Only prepend in group chats to help the agent identify who is speaking.
+        Includes message_id (for reactions) and message_time in group chats.
         """
+        from datetime import timezone, timedelta
+        msg_id = getattr(message, "message_id", None)
+        # Format message time in CST (UTC+8)
+        msg_date = getattr(message, "date", None)
+        time_str = ""
+        if msg_date:
+            cst = timezone(timedelta(hours=8))
+            time_str = msg_date.astimezone(cst).strftime("%Y-%m-%d %H:%M:%S")
+
         if message.chat.type == "private":
-            return ""
+            # Still include message_id and time for private chats
+            parts = []
+            if msg_id is not None:
+                parts.append(f"message_id: {msg_id}")
+            if time_str:
+                parts.append(f"message_time: {time_str}")
+            return f"[{', '.join(parts)}]" if parts else ""
+
         sender = cls._resolve_sender_display(user)
         chat_title = getattr(message.chat, "title", None)
+        extra_parts = []
+        if msg_id is not None:
+            extra_parts.append(f"message_id: {msg_id}")
+        if time_str:
+            extra_parts.append(f"message_time: {time_str}")
+        extra = f", {', '.join(extra_parts)}" if extra_parts else ""
         if chat_title:
-            return f"[from: {sender}, group: {chat_title}]"
-        return f"[from: {sender}]"
+            return f"[from: {sender}, group: {chat_title}{extra}]"
+        return f"[from: {sender}{extra}]"

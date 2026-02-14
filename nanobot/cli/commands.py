@@ -111,6 +111,13 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
+def _enabled_mcp_servers(config) -> dict:
+    """Return enabled MCP servers, honoring global and per-server switches."""
+    if not getattr(config.mcp, "enabled", True):
+        return {}
+    return {n: c for n, c in config.mcp.servers.items() if c.enabled}
+
+
 async def _read_interactive_input_async() -> str:
     """Read user input using prompt_toolkit (handles paste, history, display).
 
@@ -333,7 +340,7 @@ def gateway(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
-        mcp_servers={n: c for n, c in config.mcp.servers.items() if c.enabled} or None,
+        mcp_servers=_enabled_mcp_servers(config) or None,
         thinking=config.agents.defaults.thinking,
         thinking_budget=config.agents.defaults.thinking_budget,
         effort=config.agents.defaults.effort,
@@ -387,9 +394,11 @@ def gateway(
 
     # Show MCP status
     if config.mcp.servers:
-        enabled = [n for n, c in config.mcp.servers.items() if c.enabled]
+        enabled = list(_enabled_mcp_servers(config))
         if enabled:
             console.print(f"[green]✓[/green] MCP servers: {', '.join(enabled)}")
+        elif not config.mcp.enabled:
+            console.print("[yellow]MCP disabled globally (mcp.enabled=false)[/yellow]")
 
     async def run():
         try:
@@ -452,7 +461,7 @@ def agent(
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
-        mcp_servers={n: c for n, c in config.mcp.servers.items() if c.enabled} or None,
+        mcp_servers=_enabled_mcp_servers(config) or None,
         thinking=config.agents.defaults.thinking,
         thinking_budget=config.agents.defaults.thinking_budget,
         effort=config.agents.defaults.effort,
@@ -847,6 +856,8 @@ def mcp_list():
     from nanobot.config.loader import load_config
 
     config = load_config()
+    if not config.mcp.enabled:
+        console.print("[yellow]MCP is disabled globally (mcp.enabled=false).[/yellow]")
     servers = config.mcp.servers
 
     if not servers:
@@ -881,7 +892,11 @@ def mcp_tools():
     from nanobot.config.loader import load_config
 
     config = load_config()
-    servers = {n: c for n, c in config.mcp.servers.items() if c.enabled}
+    if not config.mcp.enabled:
+        console.print("MCP is disabled globally (mcp.enabled=false).")
+        return
+
+    servers = _enabled_mcp_servers(config)
 
     if not servers:
         console.print("No enabled MCP servers configured.")

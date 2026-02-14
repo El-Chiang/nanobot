@@ -1,7 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -247,6 +247,11 @@ class McpServerConfig(BaseModel):
 
 class McpConfig(BaseModel):
     """MCP servers configuration."""
+    enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("enabled", "enable"),
+        serialization_alias="enabled",
+    )
     servers: dict[str, McpServerConfig] = Field(default_factory=dict)
 
 

@@ -41,7 +41,8 @@ class MessageTool(Tool):
         return (
             "Send a message to the user. Use this when you want to communicate something. "
             "You can optionally attach images by providing local file paths in the media parameter. "
-            "For Telegram, you can also send a sticker with sticker_id."
+            "For Telegram, you can also send a sticker with sticker_id. "
+            "For Telegram, you can also add a reaction emoji to a message with reaction and message_id."
         )
 
     @property
@@ -69,6 +70,14 @@ class MessageTool(Tool):
                 "sticker_id": {
                     "type": "string",
                     "description": "Optional: Telegram sticker file_id to send"
+                },
+                "reaction": {
+                    "type": "string",
+                    "description": "Optional: emoji reaction to add to a message (e.g. '👍', '❤️'). Requires message_id."
+                },
+                "message_id": {
+                    "type": "integer",
+                    "description": "Optional: target message ID for reaction"
                 }
             },
             "required": []
@@ -81,12 +90,15 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         media: list[str] | None = None,
         sticker_id: str | None = None,
+        reaction: str | None = None,
+        message_id: int | None = None,
         **kwargs: Any
     ) -> str:
         channel = channel or self._default_channel
         chat_id = chat_id or self._default_chat_id
         text = content or ""
         sticker_id = (sticker_id or "").strip() or None
+        reaction = (reaction or "").strip() or None
 
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
@@ -94,11 +106,23 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
-        if not text and not media and not sticker_id:
-            return "Error: Provide at least one of content, media, or sticker_id"
+        if not text and not media and not sticker_id and not reaction:
+            return "Error: Provide at least one of content, media, sticker_id, or reaction"
 
         if sticker_id and channel != "telegram":
             return "Error: sticker_id is only supported on telegram channel"
+
+        if reaction and not message_id:
+            return "Error: reaction requires message_id"
+
+        if reaction and channel != "telegram":
+            return "Error: reaction is only supported on telegram channel"
+
+        metadata = dict(self._default_metadata)
+        if reaction:
+            # Keep metadata keys for backward compatibility with existing channel handlers.
+            metadata["reaction"] = reaction
+            metadata["reaction_message_id"] = message_id
 
         msg = OutboundMessage(
             channel=channel,
@@ -106,12 +130,16 @@ class MessageTool(Tool):
             content=text,
             media=[str(Path(p).expanduser()) for p in media] if media else [],
             sticker_id=sticker_id,
-            metadata=self._default_metadata,
+            reaction=reaction,
+            reaction_message_id=message_id,
+            metadata=metadata,
         )
 
         try:
             await self._send_callback(msg)
-            parts = [f"Message sent to {channel}:{chat_id}"]
+            parts = [f"Message queued to {channel}:{chat_id}"]
+            if reaction:
+                parts.append(f" with reaction {reaction} on message {message_id}")
             if sticker_id:
                 parts.append(" with 1 sticker")
             if media:

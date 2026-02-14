@@ -3,8 +3,8 @@
 import asyncio
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -34,6 +34,7 @@ class AgentLoop:
     4. Executes tool calls
     5. Sends responses back
     """
+    _LOG_PREVIEW_LIMIT = 320
     
     def __init__(
         self,
@@ -176,12 +177,24 @@ class AgentLoop:
             await self._mcp_manager.stop()
 
     @staticmethod
+    def _normalize_timestamp(timestamp: datetime | str | None) -> str | None:
+        """Convert message timestamp to JSON-serializable ISO text."""
+        if timestamp is None:
+            return None
+        if isinstance(timestamp, datetime):
+            return timestamp.isoformat()
+        return str(timestamp)
+
+    @staticmethod
     def _save_session_with_tools(
         session, user_content: str, final_content: str,
         tool_use_log: list[tuple[str, str, str]],
+        user_timestamp: datetime | str | None = None,
     ) -> None:
         """Save user + assistant messages, with tool_use_log as a virtual tool call."""
-        session.add_message("user", user_content)
+        user_ts = AgentLoop._normalize_timestamp(user_timestamp)
+        user_kwargs = {"timestamp": user_ts} if user_ts else {}
+        session.add_message("user", user_content, **user_kwargs)
         if tool_use_log:
             # Format summary text
             lines = []
@@ -220,7 +233,9 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._process_system_message(msg)
         
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+        preview = msg.content[: self._LOG_PREVIEW_LIMIT]
+        if len(msg.content) > self._LOG_PREVIEW_LIMIT:
+            preview += "...(truncated)"
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
         
         # Get or create session
@@ -246,6 +261,7 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            current_timestamp=msg.timestamp,
         )
         
         # Agent loop
@@ -339,7 +355,13 @@ class AgentLoop:
             )
         
         # Save to session (tool_use_log stored as virtual tool call)
-        self._save_session_with_tools(session, msg.content, final_content, tool_use_log)
+        self._save_session_with_tools(
+            session,
+            msg.content,
+            final_content,
+            tool_use_log,
+            user_timestamp=msg.timestamp,
+        )
         self.sessions.save(session)
 
         if self._contains_silent_marker(final_content):
@@ -356,7 +378,9 @@ class AgentLoop:
             return None
         
         # Log response preview
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        preview = final_content[: self._LOG_PREVIEW_LIMIT]
+        if len(final_content) > self._LOG_PREVIEW_LIMIT:
+            preview += "...(truncated)"
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
         
         return OutboundMessage(
@@ -408,6 +432,7 @@ class AgentLoop:
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,
+            current_timestamp=msg.timestamp,
         )
         
         # Agent loop (limited for announce handling)
@@ -493,7 +518,11 @@ class AgentLoop:
         
         # Save to session (tool_use_log stored as virtual tool call)
         self._save_session_with_tools(
-            session, f"[System: {msg.sender_id}] {msg.content}", final_content, tool_use_log,
+            session,
+            f"[System: {msg.sender_id}] {msg.content}",
+            final_content,
+            tool_use_log,
+            user_timestamp=msg.timestamp,
         )
         self.sessions.save(session)
 

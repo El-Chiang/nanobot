@@ -1,6 +1,7 @@
 """Base channel interface for chat platforms."""
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -89,7 +90,8 @@ class BaseChannel(ABC):
         chat_id: str,
         content: str,
         media: list[str] | None = None,
-        metadata: dict[str, Any] | None = None
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
     ) -> None:
         """
         Handle an incoming message from the chat platform.
@@ -102,6 +104,7 @@ class BaseChannel(ABC):
             content: Message text content.
             media: Optional list of media URLs.
             metadata: Optional channel-specific metadata.
+            timestamp: Optional original message time from channel.
         """
         if not self.is_allowed(sender_id):
             logger.warning(
@@ -115,6 +118,7 @@ class BaseChannel(ABC):
             sender_id=str(sender_id),
             chat_id=str(chat_id),
             content=content,
+            timestamp=timestamp or datetime.now(),
             media=media or [],
             metadata=metadata or {}
         )
