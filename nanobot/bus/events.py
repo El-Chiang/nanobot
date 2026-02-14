@@ -32,6 +32,6 @@ class OutboundMessage:
     content: str
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
+    sticker_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
 

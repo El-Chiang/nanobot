@@ -133,10 +133,17 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("reset", self._on_reset))
         self._app.add_handler(CommandHandler("help", self._on_help))
         
-        # Add message handler for text, photos, voice, documents
+        # Add message handler for text, photos, voice, audio, documents, stickers
         self._app.add_handler(
             MessageHandler(
-                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL) 
+                (
+                    filters.TEXT
+                    | filters.PHOTO
+                    | filters.VOICE
+                    | filters.AUDIO
+                    | filters.Document.ALL
+                    | filters.Sticker.ALL
+                )
                 & ~filters.COMMAND, 
                 self._on_message
             )
@@ -201,6 +208,12 @@ class TelegramChannel(BaseChannel):
                 chat_id,
                 reply_to_message_id,
             )
+            sticker_id = (msg.sticker_id or "").strip()
+            if sticker_id:
+                await self._send_sticker(chat_id, sticker_id, reply_to_message_id)
+                if (msg.content or "").strip():
+                    await self._send_text(chat_id, msg.content, reply_to_message_id)
+                return
 
             # Check for media (images)
             valid_media = [p for p in (msg.media or []) if Path(p).is_file()]
@@ -217,6 +230,8 @@ class TelegramChannel(BaseChannel):
 
     async def _send_text(self, chat_id: int, content: str, reply_to_message_id: int | None) -> None:
         """Send a text-only message."""
+        if not content:
+            return
         html_content = _markdown_to_telegram_html(content)
         send_kwargs: dict = {
             "chat_id": chat_id,
@@ -236,6 +251,17 @@ class TelegramChannel(BaseChannel):
                 fallback_kwargs["reply_to_message_id"] = reply_to_message_id
                 fallback_kwargs["allow_sending_without_reply"] = True
             await self._app.bot.send_message(**fallback_kwargs)
+
+    async def _send_sticker(self, chat_id: int, sticker_id: str, reply_to_message_id: int | None) -> None:
+        """Send a Telegram sticker by file_id."""
+        send_kwargs: dict = {
+            "chat_id": chat_id,
+            "sticker": sticker_id,
+        }
+        if reply_to_message_id is not None:
+            send_kwargs["reply_to_message_id"] = reply_to_message_id
+            send_kwargs["allow_sending_without_reply"] = True
+        await self._app.bot.send_sticker(**send_kwargs)
 
     async def _send_with_media(self, chat_id: int, content: str, media_paths: list[str], reply_to_message_id: int | None) -> None:
         """Send message with photo(s)."""
@@ -338,7 +364,7 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(help_text, parse_mode="HTML")
     
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming messages (text, photos, voice, documents)."""
+        """Handle incoming messages (text, photos, voice, documents, stickers)."""
         if not update.message or not update.effective_user:
             return
         
@@ -378,6 +404,25 @@ class TelegramChannel(BaseChannel):
             content_parts.append(message.text)
         if message.caption:
             content_parts.append(message.caption)
+
+        # Sticker metadata (no file download needed)
+        if message.sticker:
+            sticker = message.sticker
+            emoji = (sticker.emoji or "").strip()
+            set_name = (sticker.set_name or "").strip()
+            file_id = (sticker.file_id or "").strip()
+            # Build sticker description
+            parts = []
+            if emoji:
+                parts.append(emoji)
+            if set_name:
+                parts.append(f"({set_name})")
+            if file_id:
+                parts.append(f"file_id={file_id}")
+            if parts:
+                content_parts.append(f"[sticker: {' '.join(parts)}]")
+            else:
+                content_parts.append("[sticker]")
         
         # Handle media files
         media_file = None
@@ -453,6 +498,9 @@ class TelegramChannel(BaseChannel):
                 "sender_display": self._resolve_sender_display(user),
                 "chat_title": getattr(message.chat, "title", None),
                 "is_group": is_group,
+                "sticker_file_id": getattr(message.sticker, "file_id", None),
+                "sticker_emoji": getattr(message.sticker, "emoji", None),
+                "sticker_set_name": getattr(message.sticker, "set_name", None),
                 **reply_meta,
             }
         )

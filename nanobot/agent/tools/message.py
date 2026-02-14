@@ -40,7 +40,8 @@ class MessageTool(Tool):
     def description(self) -> str:
         return (
             "Send a message to the user. Use this when you want to communicate something. "
-            "You can optionally attach images by providing local file paths in the media parameter."
+            "You can optionally attach images by providing local file paths in the media parameter. "
+            "For Telegram, you can also send a sticker with sticker_id."
         )
 
     @property
@@ -64,21 +65,28 @@ class MessageTool(Tool):
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Optional: list of local file paths to images to send"
+                },
+                "sticker_id": {
+                    "type": "string",
+                    "description": "Optional: Telegram sticker file_id to send"
                 }
             },
-            "required": ["content"]
+            "required": []
         }
 
     async def execute(
         self,
-        content: str,
+        content: str = "",
         channel: str | None = None,
         chat_id: str | None = None,
         media: list[str] | None = None,
+        sticker_id: str | None = None,
         **kwargs: Any
     ) -> str:
         channel = channel or self._default_channel
         chat_id = chat_id or self._default_chat_id
+        text = content or ""
+        sticker_id = (sticker_id or "").strip() or None
 
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
@@ -86,17 +94,26 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
+        if not text and not media and not sticker_id:
+            return "Error: Provide at least one of content, media, or sticker_id"
+
+        if sticker_id and channel != "telegram":
+            return "Error: sticker_id is only supported on telegram channel"
+
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
-            content=content,
+            content=text,
             media=[str(Path(p).expanduser()) for p in media] if media else [],
+            sticker_id=sticker_id,
             metadata=self._default_metadata,
         )
 
         try:
             await self._send_callback(msg)
             parts = [f"Message sent to {channel}:{chat_id}"]
+            if sticker_id:
+                parts.append(" with 1 sticker")
             if media:
                 parts.append(f" with {len(media)} image(s)")
             return "".join(parts)
