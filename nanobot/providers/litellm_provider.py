@@ -2,7 +2,9 @@
 
 import json
 import os
+import re
 from typing import Any
+from uuid import uuid4
 
 import litellm
 from litellm import acompletion
@@ -28,10 +30,12 @@ class LiteLLMProvider(LLMProvider):
         default_model: str = "anthropic/claude-opus-4-5",
         extra_headers: dict[str, str] | None = None,
         provider_name: str | None = None,
+        default_stream: bool = False,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        self.default_stream = default_stream
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -108,6 +112,52 @@ class LiteLLMProvider(LLMProvider):
             return f"{compact[:limit]}...(truncated)"
         return compact
 
+    @staticmethod
+    def _is_custom_gemini_proxy(model: str, api_base: str | None) -> bool:
+        """Detect Gemini calls routed through non-official proxy endpoints."""
+        if "gemini/" not in model.lower():
+            return False
+        if not api_base:
+            return False
+        base = api_base.lower()
+        return "generativelanguage.googleapis.com" not in base
+
+    def _prepare_messages_for_gemini_stream_proxy(
+        self, messages: list[dict[str, Any]], model: str, api_base: str | None
+    ) -> list[dict[str, Any]]:
+        """
+        Clean history for stream fallback on Gemini-compatible proxies.
+
+        Some proxies reject OpenAI-style tool history blocks in Gemini stream mode.
+        Keep only text conversation turns and remove tool metadata from history.
+        """
+        if not self._is_custom_gemini_proxy(model, api_base):
+            return messages
+
+        normalized: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            if role not in {"system", "user", "assistant"}:
+                # Drop tool/function messages from history.
+                continue
+
+            entry = dict(msg)
+            entry.pop("tool_calls", None)
+            entry.pop("tool_call_id", None)
+            entry.pop("name", None)
+
+            # Skip empty assistant placeholders (commonly tool-call wrappers).
+            if role == "assistant":
+                content = entry.get("content")
+                if content is None:
+                    continue
+                if isinstance(content, str) and content.strip() == "":
+                    continue
+
+            normalized.append(entry)
+
+        return normalized or messages
+
     def _log_response_summary(self, response: LLMResponse) -> None:
         """Log a compact summary of the model response."""
         content_preview = self._preview_text(response.content)
@@ -161,7 +211,6 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = self._resolve_model(model or self.default_model)
-
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -204,22 +253,42 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             logger.debug(
-                f"LLM Request: model={kwargs.get('model')}, api_base={kwargs.get('api_base')}"
+                f"LLM Request: model={kwargs.get('model')}, api_base={kwargs.get('api_base')}, "
+                f"default_stream={self.default_stream}"
             )
-            response = await acompletion(**kwargs)
+            if self.default_stream:
+                stream_kwargs = self._prepare_stream_kwargs(kwargs)
+                return await self._stream_chat(stream_kwargs)
+
+            non_stream_kwargs = self._prepare_non_stream_kwargs(kwargs)
+            response = await acompletion(**non_stream_kwargs)
             parsed = self._parse_response(response)
             self._log_response_summary(parsed)
             return parsed
         except Exception as e:
-            # 非 stream 失败，尝试 stream 兜底
-            logger.warning(
-                "Non-stream call failed, falling back to stream: "
-                f"{self._format_exception(e)}"
-            )
+            # 根据默认模式互相兜底
+            if self.default_stream:
+                logger.warning(
+                    "Stream call failed, falling back to non-stream: "
+                    f"{self._format_exception(e)}"
+                )
+            else:
+                logger.warning(
+                    "Non-stream call failed, falling back to stream: "
+                    f"{self._format_exception(e)}"
+                )
             try:
-                return await self._stream_chat(kwargs)
-            except Exception as stream_e:
-                err = self._format_exception(stream_e)
+                if self.default_stream:
+                    non_stream_kwargs = self._prepare_non_stream_kwargs(kwargs)
+                    response = await acompletion(**non_stream_kwargs)
+                    parsed = self._parse_response(response)
+                    self._log_response_summary(parsed)
+                    return parsed
+
+                stream_kwargs = self._prepare_stream_kwargs(kwargs)
+                return await self._stream_chat(stream_kwargs)
+            except Exception as fallback_e:
+                err = self._format_exception(fallback_e)
                 logger.warning(f"LLM Response: mode=error, error={err}")
                 return LLMResponse(
                     content=f"Error calling LLM: {err}",
@@ -302,6 +371,18 @@ class LiteLLMProvider(LLMProvider):
         content = "".join(content_parts) if content_parts else None
         reasoning_content = "".join(reasoning_parts) if reasoning_parts else None
 
+        # Stream some proxy/model variants emit textual pseudo tool calls:
+        #   [tool_call] message({...})
+        # Coerce them into structured tool calls (stream-only fallback).
+        if not tool_calls:
+            content, parsed_tool_calls = self._coerce_stream_text_tool_calls(content)
+            if parsed_tool_calls:
+                tool_calls = parsed_tool_calls
+                logger.warning(
+                    "Stream text tool_call marker detected; coerced "
+                    f"{len(parsed_tool_calls)} tool call(s)."
+                )
+
         response = LLMResponse(
             content=content,
             tool_calls=tool_calls,
@@ -312,6 +393,93 @@ class LiteLLMProvider(LLMProvider):
 
         self._log_response_summary(response)
         return response
+
+    def _prepare_stream_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Clone kwargs and normalize messages for stream-sensitive proxies."""
+        stream_kwargs = dict(kwargs)
+        stream_kwargs["messages"] = self._prepare_messages_for_gemini_stream_proxy(
+            kwargs["messages"], kwargs["model"], kwargs.get("api_base")
+        )
+        return stream_kwargs
+
+    def _prepare_non_stream_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Clone kwargs and normalize messages for non-stream Gemini proxy calls."""
+        non_stream_kwargs = dict(kwargs)
+        non_stream_kwargs["messages"] = self._prepare_messages_for_gemini_stream_proxy(
+            kwargs["messages"], kwargs["model"], kwargs.get("api_base")
+        )
+        return non_stream_kwargs
+
+    def _coerce_stream_text_tool_calls(
+        self, content: str | None
+    ) -> tuple[str | None, list[ToolCallRequest]]:
+        """Parse textual [tool_call] markers from stream text into ToolCallRequest."""
+        if not content or "[tool_call]" not in content:
+            return content, []
+
+        token = "[tool_call]"
+        decoder = json.JSONDecoder()
+        calls: list[ToolCallRequest] = []
+        spans: list[tuple[int, int]] = []
+        pos = 0
+
+        while True:
+            start = content.find(token, pos)
+            if start < 0:
+                break
+
+            idx = start + len(token)
+            header = re.match(r"\s*([A-Za-z_]\w*)\s*\(", content[idx:])
+            if not header:
+                pos = start + len(token)
+                continue
+
+            name = header.group(1)
+            idx += header.end()
+
+            tail = content[idx:].lstrip()
+            idx += len(content[idx:]) - len(tail)
+            if not tail.startswith("{"):
+                pos = start + len(token)
+                continue
+
+            try:
+                args_obj, consumed = decoder.raw_decode(tail)
+            except json.JSONDecodeError:
+                pos = start + len(token)
+                continue
+
+            idx += consumed
+            trailing = content[idx:].lstrip()
+            idx += len(content[idx:]) - len(trailing)
+            if idx >= len(content) or content[idx] != ")":
+                pos = start + len(token)
+                continue
+
+            end = idx + 1
+            spans.append((start, end))
+            calls.append(
+                ToolCallRequest(
+                    id=f"text_toolcall_{uuid4().hex[:12]}",
+                    name=name,
+                    arguments=args_obj if isinstance(args_obj, dict) else {"raw": args_obj},
+                )
+            )
+            pos = end
+
+        if not calls:
+            return content, []
+
+        parts: list[str] = []
+        cursor = 0
+        for start, end in spans:
+            parts.append(content[cursor:start])
+            cursor = end
+        parts.append(content[cursor:])
+
+        cleaned = "".join(parts)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return (cleaned or None), calls
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""

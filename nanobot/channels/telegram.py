@@ -250,8 +250,10 @@ class TelegramChannel(BaseChannel):
 
         except ValueError:
             logger.error(f"Invalid chat_id: {msg.chat_id}")
+            raise
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")
+            raise
 
     async def _send_text(self, chat_id: int, content: str, reply_to_message_id: int | None) -> None:
         """Send a text-only message."""
@@ -287,6 +289,35 @@ class TelegramChannel(BaseChannel):
             send_kwargs["reply_to_message_id"] = reply_to_message_id
             send_kwargs["allow_sending_without_reply"] = True
         await self._app.bot.send_sticker(**send_kwargs)
+
+    def _lookup_sticker(self, file_id: str) -> dict | None:
+        """Lookup sticker info from workspace sticker map JSON by file_id."""
+        import json
+        sticker_map_path = Path.home() / ".nanobot" / "workspace" / "skills" / "sticker-kit" / "data" / "sticker_received.json"
+        try:
+            if sticker_map_path.exists():
+                data = json.loads(sticker_map_path.read_text())
+                return data.get(file_id)
+        except Exception as e:
+            logger.warning(f"Failed to lookup sticker: {e}")
+        return None
+
+    def _persist_sticker(self, file_id: str, emoji: str, set_name: str) -> None:
+        """Auto-persist sticker file_id to workspace sticker map JSON."""
+        import json
+        sticker_map_path = Path.home() / ".nanobot" / "workspace" / "skills" / "sticker-kit" / "data" / "sticker_received.json"
+        try:
+            if sticker_map_path.exists():
+                data = json.loads(sticker_map_path.read_text())
+            else:
+                sticker_map_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {}
+            if file_id not in data:
+                data[file_id] = {"emoji": emoji, "set_name": set_name, "description": ""}
+                sticker_map_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+                logger.debug(f"Persisted new sticker: {emoji} ({set_name}) -> {file_id[:20]}...")
+        except Exception as e:
+            logger.warning(f"Failed to persist sticker: {e}")
 
     async def _send_with_media(self, chat_id: int, content: str, media_paths: list[str], reply_to_message_id: int | None) -> None:
         """Send message with photo(s)."""
@@ -439,18 +470,36 @@ class TelegramChannel(BaseChannel):
             emoji = (sticker.emoji or "").strip()
             set_name = (sticker.set_name or "").strip()
             file_id = (sticker.file_id or "").strip()
-            # Build sticker description
+            description = ""
+
+            # Try to enrich from local sticker map
+            if file_id:
+                saved = self._lookup_sticker(file_id)
+                if saved:
+                    # Fill in missing emoji/set_name from saved data
+                    if not emoji:
+                        emoji = (saved.get("emoji") or "").strip()
+                    if not set_name:
+                        set_name = (saved.get("set_name") or "").strip()
+                    description = (saved.get("description") or "").strip()
+
+            # Build sticker description: [sticker: emoji (set_name) description file_id=xxx]
             parts = []
             if emoji:
                 parts.append(emoji)
             if set_name:
                 parts.append(f"({set_name})")
+            if description:
+                parts.append(description)
             if file_id:
                 parts.append(f"file_id={file_id}")
             if parts:
                 content_parts.append(f"[sticker: {' '.join(parts)}]")
             else:
                 content_parts.append("[sticker]")
+            # Auto-persist sticker to workspace sticker map
+            if file_id:
+                self._persist_sticker(file_id, emoji, set_name)
         
         # Handle media files
         media_file = None

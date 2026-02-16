@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,9 @@ class AgentLoop:
     5. Sends responses back
     """
     _LOG_PREVIEW_LIMIT = 320
+    _OUTBOUND_ACK_TIMEOUT_S = 15.0
+    _SILENT_TOKEN_RE = re.compile(r"\[SILENT\]")
+    _SILENT_TRAILING_RE = re.compile(r"\[SILENT\][\s\.,!?;:，。！？；：、…~]*$")
     
     def __init__(
         self,
@@ -111,7 +115,7 @@ class AgentLoop:
         self.tools.register(WebFetchTool())
         
         # Message tool
-        message_tool = MessageTool(send_callback=self.bus.publish_outbound)
+        message_tool = MessageTool(send_callback=self._publish_outbound_with_ack)
         self.tools.register(message_tool)
         
         # Spawn tool (for subagents)
@@ -121,6 +125,22 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    async def _publish_outbound_with_ack(self, msg: OutboundMessage) -> None:
+        """Publish outbound message and wait for channel delivery acknowledgement."""
+        request_id = msg.request_id or f"out_{uuid.uuid4().hex[:12]}"
+        msg.request_id = request_id
+        waiter = self.bus.create_outbound_waiter(request_id)
+        await self.bus.publish_outbound(msg)
+        try:
+            success, error = await asyncio.wait_for(waiter, timeout=self._OUTBOUND_ACK_TIMEOUT_S)
+        except asyncio.TimeoutError as exc:
+            self.bus.discard_outbound_waiter(request_id)
+            raise RuntimeError(
+                f"Message delivery acknowledgement timeout after {self._OUTBOUND_ACK_TIMEOUT_S:.0f}s"
+            ) from exc
+        if not success:
+            raise RuntimeError(error or "Message delivery failed")
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -216,7 +236,18 @@ class AgentLoop:
     @staticmethod
     def _contains_silent_marker(content: str | None) -> bool:
         """Return True if model output requests no outbound reply."""
-        return bool(content) and "[SILENT]" in content
+        return bool(content) and bool(AgentLoop._SILENT_TRAILING_RE.search(content))
+
+    @staticmethod
+    def _strip_silent_marker(content: str | None) -> str | None:
+        """Remove internal SILENT marker from user-visible text."""
+        if content is None:
+            return None
+        if not AgentLoop._SILENT_TOKEN_RE.search(content):
+            return content
+        cleaned = AgentLoop._SILENT_TOKEN_RE.sub("", content)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
 
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
@@ -269,6 +300,7 @@ class AgentLoop:
         final_content = None
         last_finish_reason = "unknown"
         tool_use_log: list[tuple[str, str, str]] = []  # (name, args_summary, result_summary)
+        stashed_content: str | None = None  # Content from tool_call responses that would otherwise be lost
         
         while iteration < self.max_iterations:
             iteration += 1
@@ -283,6 +315,23 @@ class AgentLoop:
                 effort=self.effort,
             )
             last_finish_reason = response.finish_reason or "unknown"
+
+            # Log token usage
+            if response.usage:
+                u = response.usage
+                cache_create = u.get('cache_creation_input_tokens', 0)
+                cache_read = u.get('cache_read_input_tokens', 0)
+                prompt = u.get('prompt_tokens', 0)
+                completion = u.get('completion_tokens', 0)
+                total = u.get('total_tokens', 0)
+                if cache_create + cache_read > 0:
+                    hit_rate = cache_read / (cache_create + cache_read) * 100
+                    logger.info(
+                        f"Token usage: prompt={prompt}, completion={completion}, total={total} | "
+                        f"cache: create={cache_create}, read={cache_read}, hit_rate={hit_rate:.1f}%"
+                    )
+                else:
+                    logger.info(f"Token usage: prompt={prompt}, completion={completion}, total={total} | cache: n/a")
 
             # Handle tool calls
             if response.has_tool_calls:
@@ -302,6 +351,14 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
+                
+                # Stash non-empty content that arrives alongside tool calls,
+                # so it can be used as final_content if the model returns empty next round.
+                if response.content and response.content.strip():
+                    stashed_content = response.content
+                    logger.info(
+                        f"Stashed content from tool_call response: {response.content[:100]}"
+                    )
                 
                 # Execute tools
                 for tool_call in response.tool_calls:
@@ -329,6 +386,13 @@ class AgentLoop:
                             f"(finish_reason={last_finish_reason}, iteration={iteration}/{self.max_iterations})"
                         )
                         final_content = ""  # Empty = no extra message to send
+                    elif stashed_content:
+                        # Use content that was stashed from a previous tool_call response
+                        logger.info(
+                            "Model returned empty content — using stashed content from tool_call response: "
+                            f"{stashed_content[:100]}"
+                        )
+                        final_content = stashed_content
                     else:
                         logger.warning(
                             "Model returned empty/blank content without tool calls "
@@ -354,6 +418,9 @@ class AgentLoop:
                 "Please retry with a narrower request or increase agents.defaults.max_tool_iterations."
             )
         
+        silent_requested = self._contains_silent_marker(final_content)
+        final_content = self._strip_silent_marker(final_content)
+
         # Save to session (tool_use_log stored as virtual tool call)
         self._save_session_with_tools(
             session,
@@ -364,7 +431,7 @@ class AgentLoop:
         )
         self.sessions.save(session)
 
-        if self._contains_silent_marker(final_content):
+        if silent_requested:
             logger.info(
                 "Suppress outbound message for {}:{} due to [SILENT] marker",
                 msg.channel,
@@ -454,6 +521,23 @@ class AgentLoop:
             )
             last_finish_reason = response.finish_reason or "unknown"
 
+            # Log token usage
+            if response.usage:
+                u = response.usage
+                cache_create = u.get('cache_creation_input_tokens', 0)
+                cache_read = u.get('cache_read_input_tokens', 0)
+                prompt = u.get('prompt_tokens', 0)
+                completion = u.get('completion_tokens', 0)
+                total = u.get('total_tokens', 0)
+                if cache_create + cache_read > 0:
+                    hit_rate = cache_read / (cache_create + cache_read) * 100
+                    logger.info(
+                        f"Token usage: prompt={prompt}, completion={completion}, total={total} | "
+                        f"cache: create={cache_create}, read={cache_read}, hit_rate={hit_rate:.1f}%"
+                    )
+                else:
+                    logger.info(f"Token usage: prompt={prompt}, completion={completion}, total={total} | cache: n/a")
+
             if response.has_tool_calls:
                 tool_call_dicts = [
                     {
@@ -516,6 +600,9 @@ class AgentLoop:
                 f"({self.max_iterations}). Last finish_reason={last_finish_reason}."
             )
         
+        silent_requested = self._contains_silent_marker(final_content)
+        final_content = self._strip_silent_marker(final_content)
+
         # Save to session (tool_use_log stored as virtual tool call)
         self._save_session_with_tools(
             session,
@@ -526,7 +613,7 @@ class AgentLoop:
         )
         self.sessions.save(session)
 
-        if self._contains_silent_marker(final_content):
+        if silent_requested:
             logger.info(
                 "Suppress outbound system message for {} due to [SILENT] marker",
                 msg.sender_id,

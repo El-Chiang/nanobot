@@ -73,7 +73,7 @@ class MessageTool(Tool):
                 },
                 "reaction": {
                     "type": "string",
-                    "description": "Optional: emoji reaction to add to a message (e.g. '👍', '❤️'). Requires message_id."
+                    "description": "Optional: emoji reaction to add to a message (only support: '👍', '❤️', '🔥', '🤬'， '👎', '🥰', '👏'). Requires message_id."
                 },
                 "message_id": {
                     "type": "integer",
@@ -137,7 +137,7 @@ class MessageTool(Tool):
 
         try:
             await self._send_callback(msg)
-            parts = [f"Message queued to {channel}:{chat_id}"]
+            parts = [f"Message delivered to {channel}:{chat_id}"]
             if reaction:
                 parts.append(f" with reaction {reaction} on message {message_id}")
             if sticker_id:

@@ -18,7 +18,7 @@ config.json 配置
     ↓
 _make_provider() (cli/commands.py)
     ↓ 读取 config，调用 config.get_provider() 匹配 provider
-    ↓ 传入 api_key, api_base, model, extra_headers, provider_name
+    ↓ 传入 api_key, api_base, model, extra_headers, provider_name, default_stream
     ↓
 LiteLLMProvider.__init__()
     ↓ find_gateway() → 检测是否为网关/本地部署
@@ -99,6 +99,7 @@ _parse_response() → 统一解析为 LLMResponse
 
 - 显式传递 `api_key` 和 `api_base`（避免环境变量干扰）
 - 支持 `extra_headers`（用于 AiHubMix APP-Code 等）
+- 支持 provider 级 `default_stream`（可配置默认先走 stream 或非 stream，失败自动互相兜底）
 - 错误时返回 `LLMResponse(content="Error...", finish_reason="error")` 而非抛异常
 
 ### transcription.py — 语音转文字

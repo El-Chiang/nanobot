@@ -188,6 +188,7 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    default_stream: bool = False  # Default call mode for this provider (False=non-stream, True=stream)
 
 
 class ProvidersConfig(BaseModel):
@@ -296,6 +297,11 @@ class Config(BaseSettings):
         """Get the registry name of the matched provider (e.g. "deepseek", "openrouter")."""
         _, name = self._match_provider(model)
         return name
+
+    def get_provider_default_stream(self, model: str | None = None) -> bool:
+        """Get matched provider's default stream mode."""
+        p = self.get_provider(model)
+        return p.default_stream if p else False
 
     def get_api_key(self, model: str | None = None) -> str | None:
         """Get API key for the given model. Falls back to first available key."""

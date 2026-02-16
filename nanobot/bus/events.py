@@ -30,6 +30,7 @@ class OutboundMessage:
     channel: str
     chat_id: str
     content: str
+    request_id: str | None = None  # Optional correlation ID for delivery acknowledgement
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     sticker_id: str | None = None

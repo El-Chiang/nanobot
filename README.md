@@ -599,6 +599,22 @@ Config file: `~/.nanobot/config.json`
 > - **Groq** provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
+> - **Per-provider stream default**: set `"defaultStream": true` (or `false`) inside each provider block.
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "apiKey": "sk-or-v1-xxx",
+      "defaultStream": true
+    },
+    "deepseek": {
+      "apiKey": "sk-xxx",
+      "defaultStream": false
+    }
+  }
+}
+```
 
 | Provider | Purpose | Get API Key |
 |----------|---------|-------------|

@@ -20,6 +20,7 @@ class MessageBus:
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self._outbound_subscribers: dict[str, list[Callable[[OutboundMessage], Awaitable[None]]]] = {}
+        self._outbound_waiters: dict[str, asyncio.Future[tuple[bool, str | None]]] = {}
         self._running = False
     
     async def publish_inbound(self, msg: InboundMessage) -> None:
@@ -65,6 +66,32 @@ class MessageBus:
                         logger.error(f"Error dispatching to {msg.channel}: {e}")
             except asyncio.TimeoutError:
                 continue
+
+    def create_outbound_waiter(self, request_id: str) -> asyncio.Future[tuple[bool, str | None]]:
+        """Create a waiter future for outbound delivery acknowledgement."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[tuple[bool, str | None]] = loop.create_future()
+        old = self._outbound_waiters.pop(request_id, None)
+        if old and not old.done():
+            old.set_result((False, "superseded by a newer outbound request"))
+        self._outbound_waiters[request_id] = fut
+        return fut
+
+    def resolve_outbound_waiter(
+        self, request_id: str | None, success: bool, error: str | None = None
+    ) -> None:
+        """Resolve outbound waiter by request ID."""
+        if not request_id:
+            return
+        fut = self._outbound_waiters.pop(request_id, None)
+        if fut and not fut.done():
+            fut.set_result((success, error))
+
+    def discard_outbound_waiter(self, request_id: str | None) -> None:
+        """Drop outbound waiter without resolving."""
+        if not request_id:
+            return
+        self._outbound_waiters.pop(request_id, None)
     
     def stop(self) -> None:
         """Stop the dispatcher loop."""

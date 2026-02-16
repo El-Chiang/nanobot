@@ -213,9 +213,14 @@ class ChannelManager:
                 if channel:
                     try:
                         await channel.send(msg)
+                        self.bus.resolve_outbound_waiter(msg.request_id, True)
                     except Exception as e:
+                        self.bus.resolve_outbound_waiter(msg.request_id, False, str(e))
                         logger.error(f"Error sending to {msg.channel}: {e}")
                 else:
+                    self.bus.resolve_outbound_waiter(
+                        msg.request_id, False, f"Unknown channel: {msg.channel}"
+                    )
                     logger.warning(f"Unknown channel: {msg.channel}")
                     
             except asyncio.TimeoutError:
