@@ -1,6 +1,7 @@
 """LiteLLM provider implementation for multi-provider support."""
 
 import json
+import json_repair
 import os
 import re
 from typing import Any
@@ -211,6 +212,11 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = self._resolve_model(model or self.default_model)
+
+        # Clamp max_tokens to at least 1 — negative or zero values cause
+        # LiteLLM to reject the request with "max_tokens must be at least 1".
+        max_tokens = max(1, max_tokens)
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -495,15 +501,16 @@ class LiteLLMProvider(LLMProvider):
                     try:
                         args = json.loads(args)
                     except json.JSONDecodeError:
-                        args = {"raw": args}
+                        try:
+                            args = json_repair.loads(args)
+                        except Exception:
+                            args = {"raw": args}
 
-                tool_calls.append(
-                    ToolCallRequest(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=args,
-                    )
-                )
+                tool_calls.append(ToolCallRequest(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args,
+                ))
 
         usage = {}
         if hasattr(response, "usage") and response.usage:

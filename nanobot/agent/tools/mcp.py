@@ -11,7 +11,7 @@ from nanobot.agent.tools.base import Tool
 
 
 class MCPTool(Tool):
-    """Wraps a single MCP server tool as a nanobot Tool."""
+    """Wrap a single MCP server tool as a nanobot Tool."""
 
     def __init__(
         self,
@@ -19,7 +19,7 @@ class MCPTool(Tool):
         tool_name: str,
         tool_description: str,
         input_schema: dict[str, Any],
-        session: Any,  # mcp.ClientSession
+        session: Any,
     ):
         self._server_name = server_name
         self._tool_name = tool_name
@@ -41,24 +41,18 @@ class MCPTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         try:
-            result = await self._session.call_tool(self._tool_name, kwargs)
+            result = await self._session.call_tool(self._tool_name, arguments=kwargs)
             parts: list[str] = []
             for item in result.content:
-                if hasattr(item, "text"):
-                    parts.append(item.text)
-                else:
-                    parts.append(str(item))
+                text = getattr(item, "text", None)
+                parts.append(text if isinstance(text, str) else str(item))
             return "\n".join(parts) if parts else "(empty result)"
         except Exception as e:
             return f"MCP Error ({self._server_name}/{self._tool_name}): {e}"
 
 
 class _ServerHandle:
-    """Holds the running state of one MCP server connection.
-
-    Each server runs in its own asyncio Task that keeps the ``async with``
-    context managers alive for the lifetime of the connection.
-    """
+    """Holds runtime state for one MCP server connection."""
 
     def __init__(self, name: str):
         self.name = name
@@ -69,7 +63,7 @@ class _ServerHandle:
 
 
 class MCPManager:
-    """Manages the lifecycle of MCP server connections."""
+    """Manage lifecycle of MCP server connections."""
 
     def __init__(self, servers: dict[str, Any]):
         from nanobot.config.schema import McpServerConfig
@@ -94,27 +88,25 @@ class MCPManager:
         return [h.name for h in self._handles]
 
     async def start(self) -> list[MCPTool]:
-        """Connect to all configured MCP servers, discover tools, return MCPTool list."""
+        """Connect all configured MCP servers and return discovered tools."""
         all_tools: list[MCPTool] = []
+        loop = asyncio.get_running_loop()
 
         for name, cfg in self._configs.items():
             handle = _ServerHandle(name)
-            ready: asyncio.Future[None] = asyncio.get_event_loop().create_future()
-
-            handle.task = asyncio.create_task(
-                self._run_server(name, cfg, handle, ready)
-            )
+            ready: asyncio.Future[None] = loop.create_future()
+            handle.task = asyncio.create_task(self._run_server(name, cfg, handle, ready))
 
             try:
                 await asyncio.wait_for(ready, timeout=30)
                 self._handles.append(handle)
                 all_tools.extend(handle.tools)
-                logger.info(f"MCP server '{name}': {len(handle.tools)} tools discovered")
+                logger.info("MCP server '{}': {} tools discovered", name, len(handle.tools))
             except (asyncio.TimeoutError, BaseException) as e:
                 if isinstance(e, asyncio.TimeoutError):
-                    logger.error(f"MCP server '{name}' connection timed out (30s)")
+                    logger.error("MCP server '{}': connection timed out (30s)", name)
                 else:
-                    logger.error(f"MCP server '{name}' failed to connect: {e}")
+                    logger.error("MCP server '{}': failed to connect: {}", name, e)
                 if handle.task and not handle.task.done():
                     handle.task.cancel()
                     try:
@@ -125,7 +117,7 @@ class MCPManager:
         return all_tools
 
     async def stop(self) -> None:
-        """Signal all server tasks to stop and wait for them."""
+        """Signal all server tasks to stop and wait for cleanup."""
         for handle in reversed(self._handles):
             handle.stop_event.set()
             if handle.task:
@@ -147,21 +139,13 @@ class MCPManager:
         handle: _ServerHandle,
         ready: asyncio.Future[None],
     ) -> None:
-        """Run a single MCP server connection in its own task.
-
-        Uses proper ``async with`` to keep transport and session alive.
-        Signals *ready* when tools are discovered (or on failure).
-        Then waits on ``handle.stop_event`` to keep the connection alive.
-        """
+        """Run one MCP connection task and keep it alive until stop is requested."""
         from mcp import ClientSession
-
-        transport_type = cfg.transport
 
         try:
             cm_transport = self._create_transport(cfg)
-
             async with cm_transport as transport_result:
-                if isinstance(transport_result, tuple):
+                if isinstance(transport_result, tuple) and len(transport_result) >= 2:
                     read_stream, write_stream = transport_result[0], transport_result[1]
                 else:
                     read_stream, write_stream = transport_result, None
@@ -171,49 +155,56 @@ class MCPManager:
                     handle.session = session
 
                     result = await session.list_tools()
-                    for t in result.tools:
-                        input_schema = (
-                            t.inputSchema
-                            if hasattr(t, "inputSchema")
-                            else {"type": "object", "properties": {}}
+                    for tool in result.tools:
+                        input_schema = getattr(tool, "inputSchema", None) or {
+                            "type": "object",
+                            "properties": {},
+                        }
+                        handle.tools.append(
+                            MCPTool(
+                                server_name=name,
+                                tool_name=tool.name,
+                                tool_description=tool.description or tool.name,
+                                input_schema=input_schema,
+                                session=session,
+                            )
                         )
-                        handle.tools.append(MCPTool(
-                            server_name=name,
-                            tool_name=t.name,
-                            tool_description=t.description or t.name,
-                            input_schema=input_schema,
-                            session=session,
-                        ))
 
                     if not ready.done():
                         ready.set_result(None)
 
-                    # Keep connection alive until stop is requested
                     await handle.stop_event.wait()
 
         except BaseException as e:
             if not ready.done():
                 ready.set_exception(e)
             else:
-                logger.warning(f"MCP server '{name}' connection lost: {e}")
+                logger.warning("MCP server '{}': connection lost: {}", name, e)
 
     @staticmethod
     def _create_transport(cfg: Any) -> Any:
-        """Create the appropriate transport context manager."""
+        """Create transport context manager based on MCP server config."""
         transport = cfg.transport
 
         if transport == "stdio":
-            from mcp.client.stdio import stdio_client, StdioServerParameters
-            return stdio_client(StdioServerParameters(
-                command=cfg.command,
-                args=cfg.args,
-                env=cfg.env if cfg.env else None,
-            ))
-        elif transport == "sse":
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+
+            return stdio_client(
+                StdioServerParameters(
+                    command=cfg.command,
+                    args=cfg.args,
+                    env=cfg.env if cfg.env else None,
+                )
+            )
+
+        if transport == "sse":
             from mcp.client.sse import sse_client
+
             return sse_client(cfg.url)
-        elif transport == "streamable-http":
+
+        if transport == "streamable-http":
             from mcp.client.streamable_http import streamablehttp_client
+
             return streamablehttp_client(cfg.url)
-        else:
-            raise ValueError(f"Unknown MCP transport: {transport}")
+
+        raise ValueError(f"Unknown MCP transport: {transport}")

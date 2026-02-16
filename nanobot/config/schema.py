@@ -9,6 +9,7 @@ class WhatsAppConfig(BaseModel):
     """WhatsApp channel configuration."""
     enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
+    bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
     allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
 
 
@@ -172,6 +173,7 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 50
+    memory_window: int = 50
     thinking: str | None = None  # "enabled" (Opus 4.5) or "adaptive" (Opus 4.6), None = off
     thinking_budget: int = 10000  # Token budget when thinking="enabled"
     effort: str | None = None  # "low" / "medium" / "high" / "max"(Opus 4.6 only), None = don't send
@@ -193,6 +195,7 @@ class ProviderConfig(BaseModel):
 
 class ProvidersConfig(BaseModel):
     """Configuration for LLM providers."""
+    custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -229,11 +232,20 @@ class ExecToolConfig(BaseModel):
     timeout: int = 60
 
 
+class MCPServerConfig(BaseModel):
+    """MCP server connection configuration (stdio or HTTP)."""
+    command: str = ""  # Stdio: command to run (e.g. "npx")
+    args: list[str] = Field(default_factory=list)  # Stdio: command arguments
+    env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
+    url: str = ""  # HTTP: streamable HTTP endpoint URL
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
 class McpServerConfig(BaseModel):

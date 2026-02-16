@@ -75,7 +75,9 @@ Skills with available="false" need dependencies installed first - you can try in
     def _get_identity(self) -> str:
         """Get the core identity section."""
         from datetime import datetime
+        import time as _time
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        tz = _time.strftime("%Z") or "UTC"
         workspace_path = str(self.workspace.expanduser().resolve())
         data_dir = str(Path.home() / ".nanobot")
         system = platform.system()
@@ -95,6 +97,7 @@ Powered by nanobot. 身份见 SOUL.md，用户信息见 USER.md，行为规则�
 Your workspace is at: {workspace_path}
 - Memory files: {workspace_path}/memory/MEMORY.md
 - Daily notes: {daily_path}/YYYY-MM-DD.md
+- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 - Logs(用于排查自身问题、token 用量等)
     - 通用日志: {data_dir}/logs/nanobot_YYYY-MM-DD.log
@@ -113,7 +116,7 @@ Your workspace is at: {workspace_path}
 - IMPORTANT: 你的代码决定了每次对话只会带上 75 条消息，所以不要只说记住了、知道了，而是更新记忆文件帮助你自己记住重要信息。
 
 ## Current Time
-{now}"""
+{now} ({tz})"""
 
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
