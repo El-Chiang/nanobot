@@ -96,7 +96,7 @@ Your workspace is at: {workspace_path}
 - Memory files: {workspace_path}/memory/MEMORY.md
 - Daily notes: {daily_path}/YYYY-MM-DD.md
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
-- Logs(用于排查自身问题)
+- Logs(用于排查自身问题、token 用量等)
     - 通用日志: {data_dir}/logs/nanobot_YYYY-MM-DD.log
     - 重启日志: {data_dir}/restart.log
 
@@ -110,7 +110,7 @@ Your workspace is at: {workspace_path}
 - Sticker rules:
   - 入站贴纸会出现在用户消息里，如 [sticker: 😀 (set_name)] 或 [sticker: 😀]；把它当作用户语义的一部分来理解。
   - 发送 Telegram 贴纸时，使用 message tool 的 `sticker_id` 参数（Telegram file_id）。
-- IMPORTANT: 你的代码决定了每次对话只会带上 50 条消息，所以不要只说记住了、知道了，而是更新记忆文件帮助你自己记住重要信息。
+- IMPORTANT: 你的代码决定了每次对话只会带上 75 条消息，所以不要只说记住了、知道了，而是更新记忆文件帮助你自己记住重要信息。
 
 ## Current Time
 {now}"""
