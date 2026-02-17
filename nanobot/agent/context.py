@@ -189,12 +189,12 @@ Your workspace is at: {workspace_path}
     @classmethod
     def _append_message_time(cls, text: str, timestamp: datetime | str | None) -> str:
         """Append time suffix for the current user message."""
-        if "message_time:" in text:
+        if "current_time" in text:
             return text
         formatted = cls._format_message_time(timestamp)
         if not formatted:
             return text
-        return f"{text}\n\n[message_time: {formatted}]"
+        return f"{text}\n\n[current_time {formatted}]"
 
     def _build_user_content(
         self,

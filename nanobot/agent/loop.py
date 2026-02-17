@@ -31,7 +31,6 @@ class AgentLoop:
 
     _LOG_PREVIEW_LIMIT = 320
     _OUTBOUND_ACK_TIMEOUT_S = 15.0
-    _SILENT_TOKEN_RE = re.compile(r"\[SILENT\]")
     _SILENT_TRAILING_RE = re.compile(r"\[SILENT\][\s\.,!?;:，。！？；：、…~]*$")
 
     def __init__(
@@ -265,12 +264,14 @@ class AgentLoop:
 
     @staticmethod
     def _strip_silent_marker(content: str | None) -> str | None:
-        """Remove internal SILENT marker from user-visible text."""
+        """Remove trailing SILENT marker(s) from user-visible text."""
         if content is None:
             return None
-        if not AgentLoop._SILENT_TOKEN_RE.search(content):
+        if not AgentLoop._SILENT_TRAILING_RE.search(content):
             return content
-        cleaned = AgentLoop._SILENT_TOKEN_RE.sub("", content)
+        cleaned = content
+        while AgentLoop._SILENT_TRAILING_RE.search(cleaned):
+            cleaned = AgentLoop._SILENT_TRAILING_RE.sub("", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned
 
