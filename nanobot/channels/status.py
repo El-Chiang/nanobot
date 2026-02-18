@@ -37,6 +37,10 @@ _RE_CONSOLIDATION = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| INFO\s+\|.*Memory consolidation "
     r"(?P<action>started|done)"
 )
+_RE_SILENT = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| INFO\s+\|.*Suppress outbound message for "
+    r"(?P<target>\S+) due to \[SILENT\] marker"
+)
 
 _TOOL_CATEGORIES = {
     "read_file": "read",
@@ -144,6 +148,17 @@ def _parse_line(line: str) -> LogEntry | None:
         return LogEntry(
             cursor=_state.next_cursor(), ts=m.group("ts"), event="response",
             detail={"target": m.group("target"), "content": _shorten(m.group("content"))},
+        )
+
+    m = _RE_SILENT.match(line)
+    if m:
+        _state.status = "idle"
+        _state.current_tool = None
+        _state.current_tool_args = None
+        _state.last_activity_ts = m.group("ts")
+        return LogEntry(
+            cursor=_state.next_cursor(), ts=m.group("ts"), event="silent",
+            detail={"target": m.group("target")},
         )
 
     m = _RE_HEARTBEAT.match(line)
