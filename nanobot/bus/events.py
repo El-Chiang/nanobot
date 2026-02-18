@@ -36,4 +36,5 @@ class OutboundMessage:
     sticker_id: str | None = None
     reaction: str | None = None  # emoji reaction, e.g. "👍"
     reaction_message_id: int | None = None  # target Telegram message_id for reaction
+    silent: bool = False  # If True, channel should only stop typing indicator, not send anything
     metadata: dict[str, Any] = field(default_factory=dict)

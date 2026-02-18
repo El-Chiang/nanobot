@@ -21,3 +21,4 @@ poetry.lock
 botpy.log
 *.pem
 .DS_Store
+.tmp_home/

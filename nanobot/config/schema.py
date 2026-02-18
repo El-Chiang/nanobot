@@ -174,6 +174,7 @@ class AgentDefaults(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 50
     memory_window: int = 50
+    compression_window_size: int = 12  # Consolidate only after this many compressible messages accumulate
     thinking: str | None = None  # "enabled" (Opus 4.5) or "adaptive" (Opus 4.6), None = off
     thinking_budget: int = 10000  # Token budget when thinking="enabled"
     effort: str | None = None  # "low" / "medium" / "high" / "max"(Opus 4.6 only), None = don't send

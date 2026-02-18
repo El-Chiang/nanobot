@@ -207,6 +207,11 @@ class TelegramChannel(BaseChannel):
         
         # Stop typing indicator for this chat
         self._stop_typing(msg.chat_id)
+
+        # Silent message: only stop typing, don't send anything
+        if msg.silent:
+            logger.debug("Silent outbound for chat_id={}, typing stopped", msg.chat_id)
+            return
         
         try:
             # chat_id should be the Telegram chat ID (integer)
