@@ -166,6 +166,11 @@ class AgentLoop:
                             metadata=msg.metadata,
                         )
                     )
+                finally:
+                    try:
+                        await self.bus.complete_inbound_turn(msg)
+                    except Exception as e:
+                        logger.error(f"Error completing inbound turn: {e}")
             except asyncio.TimeoutError:
                 continue
 
@@ -534,6 +539,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             current_timestamp=msg.timestamp,
+            current_metadata=msg.metadata if msg.metadata else None,
         )
 
         final_content, _, tool_use_log = await self._run_agent_loop(messages)
@@ -608,6 +614,7 @@ class AgentLoop:
             channel=origin_channel,
             chat_id=origin_chat_id,
             current_timestamp=msg.timestamp,
+            current_metadata=msg.metadata if msg.metadata else None,
         )
 
         final_content, last_finish_reason, tool_use_log = await self._run_agent_loop(messages)

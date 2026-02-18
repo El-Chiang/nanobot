@@ -139,6 +139,7 @@ Your workspace is at: {workspace_path}
         channel: str | None = None,
         chat_id: str | None = None,
         current_timestamp: datetime | str | None = None,
+        current_metadata: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -151,6 +152,7 @@ Your workspace is at: {workspace_path}
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
             current_timestamp: Timestamp for current user message.
+            current_metadata: Optional channel/message metadata.
 
         Returns:
             List of messages including system prompt.
@@ -167,7 +169,12 @@ Your workspace is at: {workspace_path}
         messages.extend(history)
 
         # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media, current_timestamp)
+        user_content = self._build_user_content(
+            current_message,
+            media,
+            current_timestamp,
+            metadata=current_metadata,
+        )
         messages.append({"role": "user", "content": user_content})
 
         return messages
@@ -201,12 +208,42 @@ Your workspace is at: {workspace_path}
         text: str,
         media: list[str] | None,
         timestamp: datetime | str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""
+        collected = metadata.get("collected_messages") if metadata else None
+        if isinstance(collected, list) and collected:
+            grouped_blocks = self._build_collected_user_content(collected)
+            if grouped_blocks:
+                return grouped_blocks
+
         text_with_time = self._append_message_time(text, timestamp)
-        if not media:
+        images = self._build_image_blocks(media)
+        if not images:
             return text_with_time
-        
+        return images + [{"type": "text", "text": text_with_time}]
+
+    def _build_collected_user_content(self, collected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Build interleaved blocks for buffered messages to preserve text-image association."""
+        blocks: list[dict[str, Any]] = []
+        use_sender_prefix = len(collected) > 1
+
+        for item in collected:
+            sender = str(item.get("sender_id", "user"))
+            content = str(item.get("content", ""))
+            timestamp = item.get("timestamp")
+            text = f"[{sender}] {content}" if use_sender_prefix else content
+            blocks.append({"type": "text", "text": self._append_message_time(text, timestamp)})
+            blocks.extend(self._build_image_blocks(item.get("media")))
+
+        return blocks
+
+    @staticmethod
+    def _build_image_blocks(media: list[str] | None) -> list[dict[str, Any]]:
+        """Build image blocks from local media paths."""
+        if not media:
+            return []
+
         images = []
         for path in media:
             p = Path(path)
@@ -215,10 +252,7 @@ Your workspace is at: {workspace_path}
                 continue
             b64 = base64.b64encode(p.read_bytes()).decode()
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-        
-        if not images:
-            return text_with_time
-        return images + [{"type": "text", "text": text_with_time}]
+        return images
     
     def add_tool_result(
         self,
