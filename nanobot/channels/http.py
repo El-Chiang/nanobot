@@ -11,8 +11,8 @@ from loguru import logger
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.channels.status import get_aggregated_status, start_tail, stop_tail
 from nanobot.config.schema import HttpConfig
-
 
 _json_dumps = functools.partial(json.dumps, ensure_ascii=False)
 
@@ -34,6 +34,7 @@ class HttpChannel(BaseChannel):
         self._app = web.Application()
         self._app.router.add_post("/api/chat", self._handle_chat)
         self._app.router.add_get("/api/health", self._handle_health)
+        self._app.router.add_get("/api/status", self._handle_status)
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -43,6 +44,7 @@ class HttpChannel(BaseChannel):
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.config.host, self.config.port)
         await site.start()
+        await start_tail()
         logger.info(f"HTTP channel listening on {self.config.host}:{self.config.port}")
         # Keep running until stopped
         try:
@@ -54,6 +56,7 @@ class HttpChannel(BaseChannel):
     async def stop(self) -> None:
         """Shut down the HTTP server."""
         self._running = False
+        await stop_tail()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -119,3 +122,11 @@ class HttpChannel(BaseChannel):
     async def _handle_health(self, _request: web.Request) -> web.Response:
         """Handle GET /api/health."""
         return web.json_response({"status": "ok"}, dumps=_json_dumps)
+
+    async def _handle_status(self, request: web.Request) -> web.Response:
+        """Handle GET /api/status?cursor=xxx."""
+        try:
+            cursor = int(request.query.get("cursor", "0"))
+        except ValueError:
+            cursor = 0
+        return web.json_response(get_aggregated_status(cursor), dumps=_json_dumps)
