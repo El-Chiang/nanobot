@@ -172,13 +172,8 @@ def _parse_line(line: str) -> LogEntry | None:
 
     m = _RE_TOKEN.match(line)
     if m:
-        total = int(m.group("total"))
-        _state.tokens_total += total
-        return LogEntry(
-            cursor=_state.next_cursor(), ts=m.group("ts"), event="token",
-            detail={"prompt": int(m.group("prompt")), "completion": int(m.group("completion")),
-                    "total": total},
-        )
+        _state.tokens_total += int(m.group("total"))
+        return None  # token stats update only, don't pollute logs
 
     m = _RE_CONSOLIDATION.match(line)
     if m:
