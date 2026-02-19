@@ -34,6 +34,7 @@
 - 保留了我们的 `start_mcp()` 方法名（upstream 改名为 `_connect_mcp`）。
 - 在 `process_direct` 中保留了我们的 MCP 清理 `try/finally` 模式。
 - **Bug 修复**：`_process_message` 中移除了 `_bus_progress` fallback。upstream 设计是当 `on_progress=None` 时自动 fallback 到 `_bus_progress`（通过 `publish_outbound` 发送中间内容），导致 IM 渠道（Telegram/钉钉）在工具调用期间把工具名、中间思考等全部作为正式消息发出。修复后 IM 渠道不传 `on_progress`，中间内容不再发送；CLI 渠道显式传入 `_cli_progress` 不受影响。
+- **进一步收敛**：`_run_agent_loop` 中 `on_progress` 仅在模型返回可读自然语言内容时触发，不再使用 `_tool_hint()` 兜底。这避免了将 `exec(...)`、`web_search(...)` 等工具调用参数片段直接推送给终端用户，同时保留“模型主动给出的阶段说明”。
 
 ### 6. channels/telegram.py
 - 保留了我们结构化的发送方法及辅助方法（`_send_text`、`_send_sticker`、`_send_with_media`、`_resolve_reply_to_message_id`）。
