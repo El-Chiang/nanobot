@@ -567,14 +567,9 @@ class AgentLoop:
             current_metadata=msg.metadata if msg.metadata else None,
         )
 
-        async def _bus_progress(content: str) -> None:
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id, content=content,
-                metadata=msg.metadata or {},
-            ))
 
         final_content, _, tool_use_log = await self._run_agent_loop(
-            messages, on_progress=on_progress or _bus_progress,
+            messages, on_progress=on_progress,
         )
 
         silent_requested = self._contains_silent_marker(final_content)
