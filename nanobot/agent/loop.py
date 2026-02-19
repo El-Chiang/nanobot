@@ -6,6 +6,8 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+import re
+from typing import Any, Awaitable, Callable
 
 import json_repair
 from loguru import logger
@@ -222,6 +224,23 @@ class AgentLoop:
             cron_tool.set_context(channel, chat_id)
 
     @staticmethod
+    def _strip_think(text: str | None) -> str | None:
+        """Remove <think>…</think> blocks that some models embed in content."""
+        if not text:
+            return None
+        return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+
+    @staticmethod
+    def _tool_hint(tool_calls: list) -> str:
+        """Format tool calls as concise hint, e.g. 'web_search("query")'."""
+        def _fmt(tc):
+            val = next(iter(tc.arguments.values()), None) if tc.arguments else None
+            if not isinstance(val, str):
+                return tc.name
+            return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
+        return ", ".join(_fmt(tc) for tc in tool_calls)
+
+    @staticmethod
     def _normalize_timestamp(timestamp: datetime | str | None) -> str | None:
         """Convert message timestamp to JSON-serializable ISO text."""
         if timestamp is None:
@@ -375,7 +394,8 @@ class AgentLoop:
         asyncio.create_task(_run_for_session())
 
     async def _run_agent_loop(
-        self, initial_messages: list[dict]
+        self, initial_messages: list[dict],
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[str, str, list[tuple[str, str, str]]]:
         """Run the agent iteration loop and return final content + metadata."""
         messages = initial_messages
@@ -401,6 +421,10 @@ class AgentLoop:
             self._log_token_usage(response.usage)
 
             if response.has_tool_calls:
+                if on_progress:
+                    clean = self._strip_think(response.content)
+                    await on_progress(clean or self._tool_hint(response.tool_calls))
+
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -468,8 +492,8 @@ class AgentLoop:
                         "Please retry."
                     )
             else:
-                final_content = response.content
-            break
+                final_content = self._strip_think(response.content)
+                break
 
         if final_content is None:
             logger.warning(
@@ -487,7 +511,8 @@ class AgentLoop:
         return final_content, last_finish_reason, tool_use_log
 
     async def _process_message(
-        self, msg: InboundMessage, session_key: str | None = None
+        self, msg: InboundMessage, session_key: str | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message."""
         if msg.channel == "system":
@@ -542,7 +567,15 @@ class AgentLoop:
             current_metadata=msg.metadata if msg.metadata else None,
         )
 
-        final_content, _, tool_use_log = await self._run_agent_loop(messages)
+        async def _bus_progress(content: str) -> None:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=content,
+                metadata=msg.metadata or {},
+            ))
+
+        final_content, _, tool_use_log = await self._run_agent_loop(
+            messages, on_progress=on_progress or _bus_progress,
+        )
 
         silent_requested = self._contains_silent_marker(final_content)
         final_content = self._strip_silent_marker(final_content)
@@ -793,9 +826,10 @@ Respond with ONLY valid JSON, no markdown fences."""
         session_key: str = "cli:direct",
         channel: str = "cli",
         chat_id: str = "direct",
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self.start_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(msg, session_key=session_key)
+        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
         return response.content if response else ""

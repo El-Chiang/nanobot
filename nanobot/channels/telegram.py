@@ -81,6 +81,26 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
+def _split_message(content: str, max_len: int = 4000) -> list[str]:
+    """Split content into chunks within max_len, preferring line breaks."""
+    if len(content) <= max_len:
+        return [content]
+    chunks: list[str] = []
+    while content:
+        if len(content) <= max_len:
+            chunks.append(content)
+            break
+        cut = content[:max_len]
+        pos = cut.rfind('\n')
+        if pos == -1:
+            pos = cut.rfind(' ')
+        if pos == -1:
+            pos = max_len
+        chunks.append(content[:pos])
+        content = content[pos:].lstrip()
+    return chunks
+
+
 class TelegramChannel(BaseChannel):
     """
     Telegram channel using long polling.
@@ -199,22 +219,32 @@ class TelegramChannel(BaseChannel):
             await self._app.shutdown()
             self._app = None
     
+    @staticmethod
+    def _get_media_type(path: str) -> str:
+        """Guess media type from file extension."""
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+            return "photo"
+        if ext == "ogg":
+            return "voice"
+        if ext in ("mp3", "m4a", "wav", "aac"):
+            return "audio"
+        return "document"
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
         if not self._app:
             logger.warning("Telegram bot not running")
             return
-        
-        # Stop typing indicator for this chat
+
         self._stop_typing(msg.chat_id)
 
         # Silent message: only stop typing, don't send anything
         if msg.silent:
             logger.debug("Silent outbound for chat_id={}, typing stopped", msg.chat_id)
             return
-        
+
         try:
-            # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
             reply_to_message_id = self._resolve_reply_to_message_id(msg)
             logger.debug(
@@ -250,7 +280,7 @@ class TelegramChannel(BaseChannel):
                     await self._send_text(chat_id, msg.content, reply_to_message_id)
                 return
 
-            # Check for media (images)
+            # Check for media (images, audio, documents, etc.)
             valid_media = [p for p in (msg.media or []) if Path(p).is_file()]
 
             if valid_media:
@@ -266,28 +296,34 @@ class TelegramChannel(BaseChannel):
             raise
 
     async def _send_text(self, chat_id: int, content: str, reply_to_message_id: int | None) -> None:
-        """Send a text-only message."""
+        """Send a text-only message, splitting if too long."""
         if not content:
             return
-        html_content = _markdown_to_telegram_html(content)
-        send_kwargs: dict = {
-            "chat_id": chat_id,
-            "text": html_content,
-            "parse_mode": "HTML",
-        }
-        if reply_to_message_id is not None:
-            send_kwargs["reply_to_message_id"] = reply_to_message_id
-            send_kwargs["allow_sending_without_reply"] = True
-        try:
-            await self._app.bot.send_message(**send_kwargs)
-        except Exception:
-            # Fallback to plain text if HTML parsing fails
-            logger.warning("HTML parse failed, falling back to plain text")
-            fallback_kwargs: dict = {"chat_id": chat_id, "text": content}
+        for chunk in _split_message(content):
+            html_content = _markdown_to_telegram_html(chunk)
+            send_kwargs: dict = {
+                "chat_id": chat_id,
+                "text": html_content,
+                "parse_mode": "HTML",
+            }
             if reply_to_message_id is not None:
-                fallback_kwargs["reply_to_message_id"] = reply_to_message_id
-                fallback_kwargs["allow_sending_without_reply"] = True
-            await self._app.bot.send_message(**fallback_kwargs)
+                send_kwargs["reply_to_message_id"] = reply_to_message_id
+                send_kwargs["allow_sending_without_reply"] = True
+            try:
+                await self._app.bot.send_message(**send_kwargs)
+            except Exception:
+                # Fallback to plain text if HTML parsing fails
+                logger.warning("HTML parse failed, falling back to plain text")
+                fallback_kwargs: dict = {"chat_id": chat_id, "text": chunk}
+                if reply_to_message_id is not None:
+                    fallback_kwargs["reply_to_message_id"] = reply_to_message_id
+                    fallback_kwargs["allow_sending_without_reply"] = True
+                try:
+                    await self._app.bot.send_message(**fallback_kwargs)
+                except Exception as e2:
+                    logger.error(f"Error sending Telegram message: {e2}")
+            # Only reply_to on the first chunk
+            reply_to_message_id = None
 
     async def _send_sticker(self, chat_id: int, sticker_id: str, reply_to_message_id: int | None) -> None:
         """Send a Telegram sticker by file_id."""
@@ -330,46 +366,74 @@ class TelegramChannel(BaseChannel):
             logger.warning(f"Failed to persist sticker: {e}")
 
     async def _send_with_media(self, chat_id: int, content: str, media_paths: list[str], reply_to_message_id: int | None) -> None:
-        """Send message with photo(s)."""
-        html_caption = _markdown_to_telegram_html(content) if content else None
+        """Send message with media files (photos, audio, documents)."""
         reply_kwargs: dict = {}
         if reply_to_message_id is not None:
             reply_kwargs["reply_to_message_id"] = reply_to_message_id
             reply_kwargs["allow_sending_without_reply"] = True
 
-        if len(media_paths) == 1:
-            # Single photo
-            with open(media_paths[0], "rb") as f:
-                await self._app.bot.send_photo(
+        # Separate photos from other media types
+        photos = [p for p in media_paths if self._get_media_type(p) == "photo"]
+        others = [p for p in media_paths if self._get_media_type(p) != "photo"]
+
+        # Send photos (with caption on first)
+        if photos:
+            html_caption = _markdown_to_telegram_html(content) if content else None
+            if len(photos) == 1:
+                with open(photos[0], "rb") as f:
+                    await self._app.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=html_caption,
+                        parse_mode="HTML" if html_caption else None,
+                        **reply_kwargs,
+                    )
+            else:
+                media_group = []
+                for i, path in enumerate(photos):
+                    media_group.append(
+                        InputMediaPhoto(
+                            media=open(path, "rb"),
+                            caption=html_caption if i == 0 else None,
+                            parse_mode="HTML" if (i == 0 and html_caption) else None,
+                        )
+                    )
+                await self._app.bot.send_media_group(
                     chat_id=chat_id,
-                    photo=f,
-                    caption=html_caption,
-                    parse_mode="HTML" if html_caption else None,
+                    media=media_group,
                     **reply_kwargs,
                 )
-        else:
-            # Multiple photos as media group
-            media_group = []
-            for i, path in enumerate(media_paths):
-                media_group.append(
-                    InputMediaPhoto(
-                        media=open(path, "rb"),
-                        caption=html_caption if i == 0 else None,
-                        parse_mode="HTML" if (i == 0 and html_caption) else None,
-                    )
-                )
-            await self._app.bot.send_media_group(
-                chat_id=chat_id,
-                media=media_group,
-                **reply_kwargs,
-            )
-        logger.info(f"Sent {len(media_paths)} photo(s) to chat_id={chat_id}")
+            logger.info(f"Sent {len(photos)} photo(s) to chat_id={chat_id}")
+            # Text already sent as caption for photos
+            content = None
+
+        # Send non-photo media (voice, audio, documents)
+        for media_path in others:
+            try:
+                media_type = self._get_media_type(media_path)
+                sender = {
+                    "voice": self._app.bot.send_voice,
+                    "audio": self._app.bot.send_audio,
+                }.get(media_type, self._app.bot.send_document)
+                param = media_type if media_type in ("voice", "audio") else "document"
+                with open(media_path, 'rb') as f:
+                    await sender(chat_id=chat_id, **{param: f}, **reply_kwargs)
+            except Exception as e:
+                filename = media_path.rsplit("/", 1)[-1]
+                logger.error(f"Failed to send media {media_path}: {e}")
+                await self._app.bot.send_message(chat_id=chat_id, text=f"[Failed to send: {filename}]")
+            # Only reply_to on the first media
+            reply_kwargs = {}
+
+        # Send remaining text content (if not already sent as photo caption)
+        if content and content.strip():
+            await self._send_text(chat_id, content, None)
 
     @staticmethod
     def _resolve_reply_to_message_id(msg: OutboundMessage) -> int | None:
         """
         Resolve Telegram message ID for quote reply.
-        
+
         Only use explicit OutboundMessage.reply_to to avoid automatic quote replies.
         """
         if msg.reply_to is None:
@@ -394,12 +458,18 @@ class TelegramChannel(BaseChannel):
             "Type /help to see available commands."
         )
     
+    @staticmethod
+    def _sender_id(user) -> str:
+        """Build sender_id with username for allowlist matching."""
+        sid = str(user.id)
+        return f"{sid}|{user.username}" if user.username else sid
+
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
             return
         await self._handle_message(
-            sender_id=str(update.effective_user.id),
+            sender_id=self._sender_id(update.effective_user),
             chat_id=str(update.message.chat_id),
             content=update.message.text,
         )
@@ -412,11 +482,7 @@ class TelegramChannel(BaseChannel):
         message = update.message
         user = update.effective_user
         chat_id = message.chat_id
-        
-        # Use stable numeric ID, but keep username for allowlist compatibility
-        sender_id = str(user.id)
-        if user.username:
-            sender_id = f"{sender_id}|{user.username}"
+        sender_id = self._sender_id(user)
         
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
