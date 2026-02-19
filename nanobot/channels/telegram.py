@@ -237,6 +237,10 @@ class TelegramChannel(BaseChannel):
             logger.warning("Telegram bot not running")
             return
 
+        if self._is_progress_notice(msg):
+            logger.debug("Drop Telegram progress notice for chat_id={}", msg.chat_id)
+            return
+
         self._stop_typing(msg.chat_id)
 
         # Silent message: only stop typing, don't send anything

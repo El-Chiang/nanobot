@@ -83,6 +83,22 @@ class BaseChannel(ABC):
                 if part and part in allow_list:
                     return True
         return False
+
+    @staticmethod
+    def _is_progress_notice(msg: OutboundMessage) -> bool:
+        """
+        Return True when outbound metadata marks this as an intermediate progress notice.
+
+        Channels can use this to drop progress updates while still delivering final responses.
+        """
+        metadata = msg.metadata or {}
+        notice_type = str(
+            metadata.get("message_type")
+            or metadata.get("notice_type")
+            or metadata.get("_notice")
+            or ""
+        ).strip().lower()
+        return bool(metadata.get("progress")) or bool(metadata.get("progress_notice")) or notice_type == "progress"
     
     async def _handle_message(
         self,

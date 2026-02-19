@@ -324,6 +324,10 @@ class DingTalkChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through DingTalk (private or group)."""
+        if self._is_progress_notice(msg):
+            logger.debug("Drop DingTalk progress notice for chat_id={}", msg.chat_id)
+            return
+
         token = await self._get_access_token()
         if not token:
             return

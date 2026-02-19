@@ -75,6 +75,10 @@ class DiscordChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Discord REST API."""
+        if self._is_progress_notice(msg):
+            logger.debug("Drop Discord progress notice for chat_id={}", msg.chat_id)
+            return
+
         if not self._http:
             logger.warning("Discord HTTP client not initialized")
             return
