@@ -350,6 +350,8 @@ class AgentLoop:
 
     def _should_schedule_consolidation(self, session: Session) -> bool:
         """Return True when consolidation should run for this session."""
+        # TODO: consolidation disabled — LLM-based compression to be redesigned
+        return False
         keep_count = self._compression_keep_count()
         total_messages = len(session.messages)
         if total_messages <= keep_count:
@@ -541,7 +543,6 @@ class AgentLoop:
                     archive_all=True,
                     persist_session=False,
                 )
-
             asyncio.create_task(_consolidate_and_cleanup())
             return OutboundMessage(
                 channel=msg.channel,
